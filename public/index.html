@@ -38,6 +38,15 @@
     cursor: pointer; outline: none; }
   #promptbar select:hover, #promptbar button:hover { border-color: var(--accent); }
 
+  /* ---- pipeline status chip ---- */
+  #pipeChip { display: none; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--warn); border: 1px solid var(--warn); border-radius: 6px;
+    padding: 5px 8px; white-space: nowrap; }
+  #pipeChip.on { display: flex; }
+  #pipeChip .pc-x { background: none; border: none; color: var(--warn);
+    font: inherit; font-size: 14px; cursor: pointer; padding: 0 2px; }
+  #pipeChip .pc-x:hover { color: var(--bad); }
+
   /* ---- panes ---- */
   #panes { flex: 1; display: grid; min-height: 0; background: var(--border); }
   .split { background: var(--border); z-index: 5; }
@@ -131,6 +140,8 @@
       <option value="3">3 panes</option><option value="4">4 panes</option>
     </select>
     <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
+    <select id="pipeline" title="type a prompt, then pick a chain — each step's answer feeds the next pane (edit pipelines/*.json)"><option value="">pipeline ▾</option></select>
+    <span id="pipeChip"><span class="pc-text"></span><button class="pc-x" title="cancel pipeline (current pane keeps running)">&times;</button></span>
     <button id="cmpBtn" title="see each model's answer to the last broadcast side by side">compare</button>
     <button id="histBtn" title="prompt history">history</button>
   </div>
@@ -191,7 +202,7 @@ const THEME = { background: '#16181d', foreground: '#d8dee9', cursor: '#7aa2f7',
 
 const ws = new WebSocket(`ws://${location.host}`);
 const panes = new Map(); // instance id -> pane object (insertion order = layout order)
-let roster = [], maxPanes = 4, history = [], histIdx = -1, playbooks = [];
+let roster = [], maxPanes = 4, history = [], histIdx = -1, playbooks = [], pipelines = [];
 const $ = id => document.getElementById(id);
 const promptEl = $('prompt'), panesEl = $('panes'), paneCountEl = $('paneCount');
 
@@ -462,7 +473,9 @@ ws.onmessage = (ev) => {
   if (msg.type === 'init') {
     roster = msg.roster; maxPanes = msg.maxPanes;
     history = msg.history || []; playbooks = msg.playbooks || [];
+    pipelines = msg.pipelines || [];
     setPlaybooks();
+    setPipelines();
     if (!panes.size) msg.panes.forEach(p => buildPane(p));
     setTimeout(nudgeAll, 600); // repaint after scrollback replay
   } else if (msg.type === 'data') {
@@ -506,6 +519,19 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || [];
     setPlaybooks();
+  } else if (msg.type === 'pipelines') {
+    pipelines = msg.items || [];
+    setPipelines();
+  } else if (msg.type === 'pipeline') {
+    const chip = $('pipeChip');
+    if (msg.state === 'step') {
+      chip.classList.add('on');
+      chip.querySelector('.pc-text').textContent = `⛓ ${msg.name} · ${msg.step + 1}/${msg.total} · ${msg.label}`;
+    } else {
+      chip.classList.remove('on');
+      if (msg.state === 'done') toast(`⛓ ${msg.name} — done. Last pane has the final answer (compare shows the last step).`);
+      else toast(`⛓ ${msg.name} — ${msg.state}${msg.text ? ': ' + msg.text : ''}`);
+    }
   }
 };
 ws.onclose = () => panes.forEach(p => p.term.write('\r\n\x1b[31m[server disconnected — restart VibeDeck and reload]\x1b[0m\r\n'));
@@ -525,6 +551,26 @@ playbookEl.addEventListener('change', () => {
   promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
 });
 playbookEl.addEventListener('mousedown', () => send({ type: 'playbooks' }));
+
+// ---------- pipelines ----------
+const pipelineEl = $('pipeline');
+function setPipelines() {
+  pipelineEl.innerHTML = '<option value="">pipeline ▾</option>'
+    + pipelines.map((p, i) => `<option value="${i}">⛓ ${p.name} (${p.steps.join(' → ')})</option>`).join('');
+}
+pipelineEl.addEventListener('change', () => {
+  const p = pipelines[Number(pipelineEl.value)];
+  pipelineEl.value = '';
+  if (!p) return;
+  const prompt = promptEl.value.trim();
+  if (!prompt) { toast('type a prompt first, then pick a pipeline'); promptEl.focus(); return; }
+  send({ type: 'pipeline', name: p.name, prompt });
+  history.push({ ts: Date.now(), text: prompt });
+  histIdx = -1;
+  promptEl.value = '';
+});
+pipelineEl.addEventListener('mousedown', () => send({ type: 'pipelines' }));
+$('pipeChip').querySelector('.pc-x').addEventListener('click', () => send({ type: 'pipelineCancel' }));
 
 // ---------- history ----------
 function renderHistory() {

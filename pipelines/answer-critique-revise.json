@@ -1,0 +1,8 @@
+{
+  "name": "answer → critique → revise",
+  "steps": [
+    { "kind": "claude", "prompt": "{prompt}" },
+    { "kind": "grok", "prompt": "Critique this answer harshly but fairly — what is wrong, missing, or overcomplicated? The question was:\n\n{prompt}\n\nThe answer:\n\n{output}" },
+    { "kind": "claude", "prompt": "Revise your previous answer using this critique. Give the improved final version:\n\n{output}" }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "plan → build → review",
+  "steps": [
+    { "kind": "claude", "prompt": "Plan only, do not implement anything yet. Think through this task and write a clear, numbered implementation plan — key files, steps, and gotchas. Keep it tight:\n\n{prompt}" },
+    { "kind": "codex", "prompt": "Implement this task. Original request:\n\n{prompt}\n\nA planning AI produced this plan — follow it unless it is clearly wrong:\n\n{output}" },
+    { "kind": "grok", "prompt": "Review the work described below critically: bugs, missed requirements, simpler alternatives. Be specific. Original request:\n\n{prompt}\n\nThe builder AI reported:\n\n{output}" }
+  ]
+}

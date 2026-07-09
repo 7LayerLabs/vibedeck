@@ -13,6 +13,7 @@ A terminal cockpit for vibe coders. One prompt bar on top, up to four live AI CL
 - **Compare**: see each model's answer to the last broadcast side by side, crown a winner, and keep a running tally.
 - **Judge**: a headless `claude -p` call rules on the round — winner, what each answer missed, and a merged best take.
 - **Relay**: pipe one pane's answer into another pane as its next prompt. Claude plans, Codex builds, Grok reviews.
+- **Pipelines**: relay chains that run hands-free. Type a prompt, pick a chain (⛓ dropdown), and the server sequences it — each step's answer feeds the next pane, with a status chip and cancel. Chains are plain JSON in `pipelines/` (`{prompt}` = your prompt, `{output}` = the previous step's answer); two ship by default: plan → build → review and answer → critique → revise.
 - **History**: every broadcast is saved; ↑/↓ cycles, the history overlay reloads or deletes entries.
 - **Playbooks**: starter prompts as plain markdown files in `playbooks/` — one click inserts them.
 

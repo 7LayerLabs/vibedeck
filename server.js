@@ -13,8 +13,10 @@ const LEGACY_PANES = path.join(__dirname, 'panes.json');
 const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.jsonl');
 const PLAYBOOK_DIR = path.join(__dirname, 'playbooks');
+const PIPELINE_DIR = path.join(__dirname, 'pipelines');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(PLAYBOOK_DIR, { recursive: true });
+fs.mkdirSync(PIPELINE_DIR, { recursive: true });
 
 // The kinds of CLI a pane can run. Any kind can run in multiple panes at once.
 // ready: the pane isn't accepting typed prompts until this paints (dialogs/init eat input).
@@ -68,7 +70,7 @@ function stripAnsi(s) {
 const SYMBOL_LINE = new RegExp('^[-=>.*\\s' +
   '\\u2500\\u2502\\u256D\\u256E\\u2570\\u256F\\u2594\\u2581\\u2590\\u258C\\u259B\\u259C\\u259D\\u2598\\u2588' +
   '\\u23F5\\u00B7\\u25D0\\u25D3\\u25D1\\u25D2\\u273B\\u2736\\u273D\\u2722\\u25E6\\u203A\\u276F]+$');
-const CHROME_LINE = /esc to interrupt|bypass permissions|shift\+tab|tokens\)|\/status|\/effort|\/model|mcp server|claude max|working \(|thinking with|↓ ?\d+ tokens|^\W*\w+…|^.{0,15}…$/i;
+const CHROME_LINE = /esc to interrupt|bypass permissions|shift\+tab|tokens\)|\/status|\/effort|\/model|mcp server|claude max|working \(|thinking with|↓ ?\d+ tokens|^\W*\w+…|^.{0,15}…$|\[pasted text|paste again to expand|ctrl\+g to edit|turn completed in [\d.]+s/i;
 function cleanTui(s, prompt) {
   // cursor-forward becomes a space (Ink uses it instead of spaces — without this
   // words fuse: "AgreatTUIapp"), and cursor-positioning (CUP, up/down) becomes a
@@ -81,7 +83,8 @@ function cleanTui(s, prompt) {
   const out = [];
   const seen = new Set();
   const norm = x => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const promptKey = prompt ? norm(prompt).slice(0, 60) : null;
+  const normPrompt = prompt ? norm(prompt) : '';
+  const promptKey = normPrompt.slice(0, 60) || null;
   for (const l of lines) {
     const t = l.trim();
     if (!t) { out.push(''); continue; }
@@ -91,6 +94,8 @@ function cleanTui(s, prompt) {
     if (CHROME_LINE.test(t)) continue;
     const key = norm(t);
     if (promptKey && key.includes(promptKey)) continue; // echo of the prompt itself
+    // partial input-box paints of a multi-line prompt ("Verdict: Concept", …)
+    if (normPrompt && key.length >= 6 && normPrompt.includes(key)) continue;
     if (seen.has(key)) continue; // TUI repaints duplicate lines constantly
     seen.add(key);
     out.push(t.replace(/\s{2,}/g, ' '));
@@ -178,7 +183,10 @@ function isReady(s) {
 }
 function writePrompt(s, text) {
   s.proc.write(text);
-  setTimeout(() => { if (s.alive) s.proc.write('\r'); }, 150);
+  // multi-line text arrives as a paste; Enter too early lands mid-ingest and
+  // never submits (claude shows "[Pasted text #N]" with the prompt stuck in the box)
+  const delay = text.includes('\n') ? Math.min(3000, 600 + text.split('\n').length * 25) : 150;
+  setTimeout(() => { if (s.alive) s.proc.write('\r'); }, delay);
 }
 // flush queued prompts when their pane becomes ready. The 30s failsafe covers
 // panes that never go quiet (grok animates constantly) but must NOT fire while
@@ -221,6 +229,19 @@ function readPlaybooks() {
       name: f.replace(/\.md$/, '').replace(/[-_]/g, ' '),
       text: fs.readFileSync(path.join(PLAYBOOK_DIR, f), 'utf8').trim(),
     }));
+  } catch { return []; }
+}
+
+function readPipelines() {
+  try {
+    return fs.readdirSync(PIPELINE_DIR).filter(f => f.endsWith('.json')).map(f => {
+      try {
+        const p = JSON.parse(fs.readFileSync(path.join(PIPELINE_DIR, f), 'utf8'));
+        if (!p.name || !Array.isArray(p.steps) || !p.steps.length) return null;
+        if (!p.steps.every(st => kindOf(st.kind) && typeof st.prompt === 'string')) return null;
+        return p;
+      } catch { return null; }
+    }).filter(Boolean);
   } catch { return []; }
 }
 
@@ -272,6 +293,83 @@ Plain text only. Do not use any tools. Do not read or write any files. Reply dir
   child.stdin.end();
 }
 
+// ---------- pipeline runner (auto-relay chains, one at a time) ----------
+// A step is "done" when its pane's cleaned output stops growing for STABLE_MS
+// and the pane looks idle. cleanTui filters spinners, so constant animation
+// can't fake progress. NOTE: the ROSTER ready patterns are startup-screen
+// signals — claude's post-answer idle screen is just "❯", so they must NOT be
+// used as a done condition (that hangs the step forever).
+const PIPE_STABLE_MS = 8000;
+const PIPE_STEP_TIMEOUT_MS = 10 * 60 * 1000;
+const BUSY_TAIL = /esc\s+to\s+interrupt/i;
+let pipeline = null; // { def, prompt, output, step, paneId, stepText, stepStart, lastCleanLen, stableSince }
+
+function firstPaneOfKind(kind) {
+  for (const [id, s] of sessions) if (s.kind === kind && s.alive) return id;
+  return null;
+}
+
+function endPipeline(outcome, text) {
+  const name = pipeline?.def.name;
+  pipeline = null;
+  broadcastWs({ type: 'pipeline', state: outcome, name, text: text || '' });
+}
+
+function startPipeline(name, prompt) {
+  if (pipeline) return broadcastWs({ type: 'pipeline', state: 'error', name, text: 'a pipeline is already running — cancel it first' });
+  const def = readPipelines().find(p => p.name === name);
+  if (!def) return broadcastWs({ type: 'pipeline', state: 'error', name, text: 'unknown pipeline' });
+  const missing = def.steps.find(st => !firstPaneOfKind(st.kind));
+  if (missing) return broadcastWs({ type: 'pipeline', state: 'error', name, text: `needs a ${kindOf(missing.kind).label} pane — add one first` });
+  slog(`pipeline start: ${name}`);
+  pipeline = { def, prompt, output: '', step: -1 };
+  advancePipeline();
+}
+
+function advancePipeline() {
+  const p = pipeline;
+  p.step++;
+  if (p.step >= p.def.steps.length) {
+    slog(`pipeline done: ${p.def.name}`);
+    return endPipeline('done');
+  }
+  const stepDef = p.def.steps[p.step];
+  const paneId = firstPaneOfKind(stepDef.kind);
+  if (!paneId) return endPipeline('error', `no live ${kindOf(stepDef.kind).label} pane for step ${p.step + 1}`);
+  const s = sessions.get(paneId);
+  const text = stepDef.prompt
+    .replace(/\{prompt\}/g, p.prompt)
+    .replace(/\{output\}/g, p.output)
+    .replace(/\r?\n/g, '\n');
+  Object.assign(p, { paneId, stepText: text, stepStart: Date.now(), lastCleanLen: 0, stableSince: 0 });
+  lastRound = { ts: Date.now(), prompt: text, targets: [paneId] }; // compare shows the live step
+  s.roundOut = '';
+  s.inRound = true;
+  if (isReady(s)) writePrompt(s, text);
+  else s.queue.push({ text, ts: Date.now() });
+  slog(`pipeline step ${p.step + 1}/${p.def.steps.length} → ${paneId}`);
+  broadcastWs({ type: 'pipeline', state: 'step', name: p.def.name, step: p.step, total: p.def.steps.length, pane: paneId, label: kindOf(stepDef.kind).label });
+}
+
+setInterval(() => {
+  const p = pipeline;
+  if (!p || p.step < 0) return;
+  const s = sessions.get(p.paneId);
+  if (!s || !s.alive) return endPipeline('error', `pane ${p.paneId} died mid-step`);
+  if (Date.now() - p.stepStart > PIPE_STEP_TIMEOUT_MS) return endPipeline('error', `step ${p.step + 1} timed out`);
+  if (s.queue.length) return; // prompt hasn't landed yet
+  const clean = cleanTui(s.roundOut, p.stepText);
+  if (clean.length < 10) return; // no real answer yet
+  if (clean.length !== p.lastCleanLen) { p.lastCleanLen = clean.length; p.stableSince = Date.now(); return; }
+  if (Date.now() - p.stableSince < PIPE_STABLE_MS) return;
+  // idle check: a done CLI goes raw-quiet (claude/codex); grok shimmers forever
+  // even when idle, so for still-painting panes fall back to the busy-marker veto
+  const rawQuiet = Date.now() - s.lastDataTs > 4000;
+  if (!rawQuiet && BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)))) return; // still working
+  p.output = clean;
+  advancePipeline();
+}, 1000);
+
 for (const kind of state.kinds) spawnPane(kind);
 
 wss.on('connection', (ws) => {
@@ -284,7 +382,11 @@ wss.on('connection', (ws) => {
     recents: state.recents,
     history: readHistory(),
     playbooks: readPlaybooks(),
+    pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
   }));
+  if (pipeline) ws.send(JSON.stringify({ type: 'pipeline', state: 'step', name: pipeline.def.name,
+    step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
+    label: kindOf(pipeline.def.steps[pipeline.step].kind).label }));
   for (const [id, s] of sessions) {
     ws.send(JSON.stringify({ type: 'data', pane: id, data: s.buffer, replay: true }));
     if (!s.alive) ws.send(JSON.stringify({ type: 'exit', pane: id, code: null }));
@@ -335,6 +437,15 @@ wss.on('connection', (ws) => {
       try { fs.writeFileSync(HISTORY_FILE, items.map(h => JSON.stringify(h)).join('\n') + (items.length ? '\n' : '')); } catch {}
     } else if (msg.type === 'playbooks') {
       ws.send(JSON.stringify({ type: 'playbooks', items: readPlaybooks() }));
+    } else if (msg.type === 'pipelines') {
+      ws.send(JSON.stringify({ type: 'pipelines', items: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })) }));
+    } else if (msg.type === 'pipeline') {
+      const prompt = String(msg.prompt || '').trim();
+      if (!prompt) return;
+      try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), text: prompt }) + '\n'); } catch {}
+      startPipeline(msg.name, prompt);
+    } else if (msg.type === 'pipelineCancel') {
+      if (pipeline) { slog(`pipeline cancelled: ${pipeline.def.name}`); endPipeline('cancelled', 'cancelled — the current pane keeps running, later steps are dropped'); }
     } else if (msg.type === 'setcwd') {
       let dir = String(msg.dir || '').trim().replace(/^"|"$/g, '');
       if (!dir) return;
