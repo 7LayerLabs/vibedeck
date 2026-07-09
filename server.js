@@ -324,6 +324,9 @@ async function updateModels() {
         // case-sensitive so a fused capitalized description ("gpt-5.4Strong") ends the match
         models = [...new Set([...painted.matchAll(/gpt-[a-z0-9.]+(?:-[a-z0-9.]+)*/g)]
           .map(m => m[0].replace(/[.-]+$/, '')))];
+        // menu lists the pane's CURRENT model first — sort newest version to the top instead
+        const ver = n => parseFloat((n.match(/(\d+(?:\.\d+)?)/) || [0, 0])[1]);
+        models.sort((a, b) => ver(b) - ver(a));
       }
       // the pane chrome alone shows the CURRENT model, so demand at least 2 to trust a scrape
       if (models.length >= 2) { modelsCfg[kind].models = models; report.push(`${kind} ${models.length} (scraped)`); }
