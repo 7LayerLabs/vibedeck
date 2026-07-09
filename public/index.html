@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VibeDeck</title>
+<link rel="icon" type="image/png" href="/icon.png">
+<link rel="stylesheet" href="/vendor/xterm/css/xterm.css">
+<style>
+  :root {
+    --bg: #16181d;
+    --bg-panel: #1c1f26;
+    --border: #2a2e38;
+    --text: #d8dee9;
+    --dim: #6b7280;
+    --accent: #7aa2f7;
+    --warn: #e0af68;
+    --ok: #9ece6a;
+    --bad: #ef4444;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Cascadia Code", Consolas, monospace; overflow: hidden; }
+
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  /* ---- top prompt bar ---- */
+  #promptbar { display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); }
+  #promptbar .sigil { color: var(--accent); font-weight: 700; }
+  #prompt { flex: 1; min-width: 200px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; font-size: 15px; padding: 8px 12px; outline: none; }
+  #prompt:focus { border-color: var(--accent); }
+  #promptbar select, #promptbar button, #promptbar input.inline {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 7px 8px;
+    cursor: pointer; outline: none; }
+  #promptbar select:hover, #promptbar button:hover { border-color: var(--accent); }
+
+  /* ---- panes ---- */
+  #panes { flex: 1; display: grid; min-height: 0; gap: 1px; background: var(--border); }
+  .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+  .pane-head { display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); font-size: 12px; user-select: none; }
+  .pane-head .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .pane.dead .dot { background: var(--bad) !important; }
+  .pane-head select.cli { background: none; border: none; font: inherit; font-size: 12px;
+    font-weight: 700; letter-spacing: 1px; cursor: pointer; outline: none; }
+  .pane-head select.cli option { background: var(--bg-panel); color: var(--text); font-weight: 400; }
+  .pane-head .inst, .pane-head .key { color: var(--dim); font-size: 11px; }
+  .pane-head select.opt, .pane-head select.relay { background: var(--bg); border: 1px solid var(--border);
+    color: var(--dim); font: inherit; font-size: 11px; border-radius: 4px;
+    padding: 1px 3px; cursor: pointer; outline: none; max-width: 120px; }
+  .pane-head select.opt:hover, .pane-head select.relay:hover { color: var(--text); border-color: var(--dim); }
+  .pane-head .spacer { flex: 1; }
+  .pane-head button { background: none; border: 1px solid var(--border);
+    color: var(--dim); font: inherit; font-size: 11px; border-radius: 4px;
+    padding: 1px 6px; cursor: pointer; }
+  .pane-head button:hover { color: var(--text); border-color: var(--dim); }
+  .pane-head button.bc.on { color: var(--accent); border-color: var(--accent); }
+  .pane-head button.x:hover { color: var(--bad); border-color: var(--bad); }
+  .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--accent); }
+  .term { flex: 1; min-height: 0; padding: 4px 0 4px 6px; }
+
+  /* ---- overlays (compare + history) ---- */
+  .overlay { position: fixed; inset: 0; background: #0c0d10ee; z-index: 50;
+    display: none; flex-direction: column; padding: 18px; }
+  .overlay.open { display: flex; }
+  .ov-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .ov-head h2 { font-size: 15px; color: var(--accent); }
+  .ov-head .ov-prompt { color: var(--dim); font-size: 12px; flex: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ov-head button { background: var(--bg-panel); border: 1px solid var(--border); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  .ov-head button:hover { border-color: var(--accent); }
+  #cmpCols { flex: 1; display: grid; gap: 10px; min-height: 0; }
+  .cmp-col { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .cmp-col .col-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); font-weight: 700; letter-spacing: 1px; font-size: 12px; }
+  .cmp-col .col-head .wins { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .cmp-col .col-head .race { margin-left: auto; color: var(--accent); font-size: 11px; font-weight: 400; }
+  .cmp-col .col-head button { background: none; border: 1px solid var(--border); color: var(--dim);
+    font: inherit; font-size: 11px; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
+  .cmp-col .col-head button:hover { color: var(--ok); border-color: var(--ok); }
+  .cmp-col.winner { border-color: var(--ok); }
+  .cmp-col.winner .col-head { color: var(--ok); }
+  .cmp-body { flex: 1; overflow: auto; padding: 10px 12px; font-size: 12px;
+    white-space: pre-wrap; word-break: break-word; color: var(--text); line-height: 1.45; }
+  #verdict { display: none; max-height: 34%; overflow: auto; margin-top: 12px;
+    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 12px 14px; font-size: 12px; white-space: pre-wrap; line-height: 1.45; }
+  #verdict.open { display: block; }
+
+  #histList { flex: 1; overflow: auto; }
+  #histList .h-item { display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; border-bottom: 1px solid var(--border);
+    cursor: pointer; font-size: 13px; }
+  #histList .h-item:hover { background: var(--bg-panel); color: var(--accent); }
+  #histList .h-item .h-ts { color: var(--dim); font-size: 11px; flex: none; }
+  #histList .h-item .h-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #histList .h-item .h-del { flex: none; background: none; border: 1px solid var(--border);
+    color: var(--dim); font: inherit; font-size: 12px; border-radius: 4px;
+    padding: 0 8px; cursor: pointer; }
+  #histList .h-item .h-del:hover { color: var(--bad); border-color: var(--bad); }
+
+  .toast { position: fixed; bottom: 16px; right: 16px; z-index: 60;
+    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 10px 14px; font-size: 12px; display: none; }
+  .toast.open { display: block; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="promptbar">
+    <span class="sigil">vibe&gt;</span>
+    <input id="prompt" placeholder="type once, send to the whole deck… (Enter · ↑↓ history · Ctrl+0 here)" autofocus spellcheck="false">
+    <select id="paneCount" title="how many panes">
+      <option value="1">1 pane</option><option value="2">2 panes</option>
+      <option value="3">3 panes</option><option value="4">4 panes</option>
+    </select>
+    <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
+    <button id="cmpBtn" title="compare the last round side by side">compare</button>
+    <button id="histBtn" title="prompt history">history</button>
+  </div>
+  <div id="panes"></div>
+</div>
+
+<div class="overlay" id="cmpOverlay">
+  <div class="ov-head">
+    <h2>compare</h2>
+    <span class="ov-prompt" id="cmpPrompt"></span>
+    <button id="judgeBtn" title="an AI judge rules on the round">⚖ judge</button>
+    <button id="cmpClose">close (esc)</button>
+  </div>
+  <div id="cmpCols"></div>
+  <div id="verdict"></div>
+</div>
+
+<div class="overlay" id="histOverlay">
+  <div class="ov-head">
+    <h2>prompt history</h2>
+    <span class="ov-prompt">click to load into the bar</span>
+    <button id="histClose">close (esc)</button>
+  </div>
+  <div id="histList"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="/vendor/xterm/lib/xterm.js"></script>
+<script src="/vendor/addon-fit/lib/addon-fit.js"></script>
+<script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
+<script>
+const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7' };
+// Per-kind dropdowns, all verified against the real CLIs. Edit lists freely.
+// mode 'slash':    types the slash command into the running session (no restart)
+// mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
+const KNOBS = {
+  claude: [
+    { mode: 'slash', cmd: '/model',  placeholder: 'model ▾',  choices: ['fable', 'opus', 'sonnet', 'haiku'] },
+    { mode: 'slash', cmd: '/effort', placeholder: 'effort ▾', choices: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  ],
+  codex: [
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾',
+      choices: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'] },
+    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort ▾',
+      choices: ['low', 'medium', 'high', 'xhigh'] },
+  ],
+  grok: [
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾',
+      choices: ['grok-4.5', 'grok-composer-2.5-fast'] },
+    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾',
+      choices: ['low', 'medium', 'high'] },
+  ],
+  shell: [],
+};
+const THEME = { background: '#16181d', foreground: '#d8dee9', cursor: '#7aa2f7', selectionBackground: '#33415580' };
+
+const ws = new WebSocket(`ws://${location.host}`);
+const panes = new Map(); // instance id -> pane object (insertion order = layout order)
+let roster = [], maxPanes = 4, history = [], histIdx = -1, playbooks = [];
+const $ = id => document.getElementById(id);
+const promptEl = $('prompt'), panesEl = $('panes'), paneCountEl = $('paneCount');
+
+function send(msg) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }
+function color(kind) { return COLORS[kind] || '#888'; }
+function stripAnsi(s) {
+  return s.replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+          .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+}
+let toastTimer;
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text;
+  t.classList.add('open');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('open'), 2500);
+}
+
+// staged writes: a single "/model x" paste-chunk makes the slash menu
+// filter on the whole string and miss; command, then arg, then Enter works
+function slashCommand(paneId, cmd, arg) {
+  send({ type: 'input', pane: paneId, data: cmd });
+  setTimeout(() => send({ type: 'input', pane: paneId, data: ` ${arg}` }), 300);
+  setTimeout(() => send({ type: 'input', pane: paneId, data: '\r' }), 600);
+}
+
+function buildPane(info) {
+  const el = document.createElement('div');
+  el.className = 'pane';
+  el.innerHTML = `
+    <div class="pane-head">
+      <span class="dot" style="background:${color(info.kind)}"></span>
+      <select class="cli" title="change this pane's CLI (new session)"></select>
+      <span class="inst"></span>
+      <span class="knobs"></span>
+      <span class="key"></span>
+      <span class="spacer"></span>
+      <select class="relay" title="send this pane's last answer to another pane"><option value="">→ relay ▾</option></select>
+      <button class="mv left" title="move pane left">&#9664;</button>
+      <button class="mv right" title="move pane right">&#9654;</button>
+      <button class="bc on" title="include in broadcast">bcast</button>
+      <button class="rs" title="restart CLI">restart</button>
+      <button class="x" title="close pane (kills this CLI)">&times;</button>
+    </div>
+    <div class="term"></div>`;
+  panesEl.appendChild(el);
+
+  const term = new Terminal({
+    theme: THEME, fontSize: 13, lineHeight: 1.15,
+    fontFamily: '"Cascadia Code", Consolas, monospace',
+    cursorBlink: true, scrollback: 8000, allowProposedApi: true,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el.querySelector('.term'));
+  // WebGL renderer: the DOM renderer smears full-screen TUI redraws
+  try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { console.warn('webgl unavailable', e); }
+  fit.fit();
+
+  term.onData(d => send({ type: 'input', pane: info.id, data: d }));
+  term.textarea.addEventListener('focus', () => {
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('focused'));
+    el.classList.add('focused');
+  });
+  term.textarea.addEventListener('blur', () => el.classList.remove('focused'));
+
+  const pane = { term, fit, el, broadcast: true, id: info.id, kind: info.kind, label: info.label, dead: false };
+
+  // CLI dropdown: picking a kind replaces this pane with a fresh instance of it
+  const cliSel = el.querySelector('.cli');
+  cliSel.innerHTML = roster.map(r =>
+    `<option value="${r.id}" ${r.id === info.kind ? 'selected' : ''}>${r.label}</option>`).join('');
+  cliSel.style.color = color(info.kind);
+  cliSel.addEventListener('change', () => {
+    const target = cliSel.value;
+    cliSel.value = info.kind;
+    if (target !== info.kind) send({ type: 'replace', pane: info.id, kind: target });
+  });
+
+  // move buttons: swap with the neighbor
+  const move = (dir) => {
+    const order = [...panes.keys()];
+    const i = order.indexOf(info.id), j = i + dir;
+    if (j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    send({ type: 'reorder', order });
+  };
+  el.querySelector('.mv.left').addEventListener('click', () => move(-1));
+  el.querySelector('.mv.right').addEventListener('click', () => move(1));
+
+  // relay: pipe this pane's last answer into another pane
+  const relaySel = el.querySelector('.relay');
+  relaySel.addEventListener('change', () => {
+    const to = relaySel.value;
+    relaySel.value = '';
+    if (to) send({ type: 'relay', pane: info.id, to });
+  });
+
+  // knob dropdowns (model, effort, …): slash-typed for claude, relaunch flags for codex/grok.
+  // All relaunch knobs combine into one flag string so changing effort keeps the model choice.
+  const knobsEl = el.querySelector('.knobs');
+  const relaunchKnobs = [];
+  const relaunchArgs = () => relaunchKnobs
+    .map(({ knob, sel }) => sel.value ? knob.argTemplate.replace('{v}', sel.value) : '')
+    .filter(Boolean).join(' ');
+  for (const knob of KNOBS[info.kind] || []) {
+    const sel = document.createElement('select');
+    sel.className = 'opt';
+    const storeKey = `vibedeck-${info.kind}-${(knob.cmd || knob.argTemplate).replace(/[^a-z]/gi, '')}`;
+    const saved = localStorage.getItem(storeKey) || '';
+    sel.innerHTML = `<option value="">${knob.placeholder}</option>`
+      + knob.choices.map(c => `<option value="${c}">${c}</option>`).join('');
+    if (saved && knob.choices.includes(saved)) sel.value = saved;
+    if (knob.mode === 'relaunch') relaunchKnobs.push({ knob, sel });
+    sel.addEventListener('change', () => {
+      const v = sel.value;
+      if (!v) return;
+      if (knob.mode === 'relaunch') {
+        send({ type: 'restart', pane: info.id, args: relaunchArgs() });
+        localStorage.setItem(storeKey, v);
+      } else {
+        slashCommand(info.id, knob.cmd, v);
+        localStorage.setItem(storeKey, v);
+      }
+    });
+    knobsEl.appendChild(sel);
+  }
+
+  const bcBtn = el.querySelector('.bc');
+  bcBtn.addEventListener('click', () => {
+    pane.broadcast = !pane.broadcast;
+    bcBtn.classList.toggle('on', pane.broadcast);
+  });
+  el.querySelector('.rs').addEventListener('click', () => send({ type: 'restart', pane: info.id }));
+  el.querySelector('.x').addEventListener('click', () => {
+    if (panes.size > 1) send({ type: 'close', pane: info.id });
+  });
+  panes.set(info.id, pane);
+  relayout();
+}
+
+function removePane(id) {
+  const p = panes.get(id);
+  if (!p) return;
+  p.term.dispose();
+  p.el.remove();
+  panes.delete(id);
+  relayout();
+}
+
+function applyOrder(order) {
+  const entries = order.map(id => [id, panes.get(id)]).filter(([, p]) => p);
+  panes.clear();
+  for (const [id, p] of entries) {
+    panes.set(id, p);
+    panesEl.appendChild(p.el); // append in order = visual order
+  }
+  relayout();
+}
+
+function paneTitle(p, i) {
+  const dupes = [...panes.values()].filter(x => x.kind === p.kind);
+  const n = dupes.indexOf(p) + 1;
+  return p.label + (dupes.length > 1 ? ` #${n}` : '');
+}
+
+function relayout() {
+  const n = panes.size;
+  panesEl.style.gridTemplateColumns = n >= 4 ? '1fr 1fr' : `repeat(${Math.max(n, 1)}, 1fr)`;
+  panesEl.style.gridTemplateRows = n >= 4 ? '1fr 1fr' : '1fr';
+  const kindCounts = {};
+  [...panes.values()].forEach(p => { kindCounts[p.kind] = (kindCounts[p.kind] || 0) + 1; });
+  const kindSeen = {};
+  const all = [...panes.values()];
+  all.forEach((p, i) => {
+    p.el.querySelector('.key').textContent = `ctrl+${i + 1}`;
+    kindSeen[p.kind] = (kindSeen[p.kind] || 0) + 1;
+    p.el.querySelector('.inst').textContent = kindCounts[p.kind] > 1 ? `#${kindSeen[p.kind]}` : '';
+    // rebuild relay targets (all other panes)
+    const relaySel = p.el.querySelector('.relay');
+    relaySel.innerHTML = '<option value="">→ relay ▾</option>' + all.filter(x => x !== p)
+      .map(x => `<option value="${x.id}">→ ${paneTitle(x)}</option>`).join('');
+  });
+  paneCountEl.value = String(n);
+  setTimeout(fitAll, 50);
+}
+
+// pane count: grow by adding CLIs (unused kinds first, then more claudes), shrink from the right
+paneCountEl.addEventListener('change', () => {
+  const want = Number(paneCountEl.value), cur = panes.size;
+  if (want > cur) {
+    const activeKinds = new Set([...panes.values()].map(p => p.kind));
+    const fresh = roster.filter(r => r.id !== 'shell' && !activeKinds.has(r.id)).map(r => r.id);
+    for (let i = 0; i < want - cur; i++) send({ type: 'add', kind: fresh.shift() || 'claude' });
+  } else if (want < cur) {
+    [...panes.values()].slice(want).forEach(p => send({ type: 'close', pane: p.id }));
+  }
+  promptEl.focus();
+});
+
+// ---------- websocket ----------
+ws.onmessage = (ev) => {
+  const msg = JSON.parse(ev.data);
+  if (msg.type === 'init') {
+    roster = msg.roster; maxPanes = msg.maxPanes;
+    history = msg.history || []; playbooks = msg.playbooks || [];
+    setPlaybooks();
+    if (!panes.size) msg.panes.forEach(p => buildPane(p));
+    setTimeout(nudgeAll, 600); // repaint after scrollback replay
+  } else if (msg.type === 'data') {
+    panes.get(msg.pane)?.term.write(msg.data);
+  } else if (msg.type === 'exit') {
+    const p = panes.get(msg.pane);
+    if (p) { p.dead = true; p.el.classList.add('dead'); p.term.write('\r\n\x1b[31m[exited — hit restart]\x1b[0m\r\n'); }
+  } else if (msg.type === 'restarted') {
+    const p = panes.get(msg.pane);
+    if (p) {
+      p.dead = false;
+      p.el.classList.remove('dead');
+      p.term.reset();
+      send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows });
+    }
+  } else if (msg.type === 'paneAdded') {
+    if (!panes.has(msg.pane.id)) buildPane(msg.pane);
+    setTimeout(() => nudgeOne(panes.get(msg.pane.id)), 400);
+  } else if (msg.type === 'paneRemoved') {
+    removePane(msg.pane);
+  } else if (msg.type === 'reordered') {
+    applyOrder(msg.order);
+  } else if (msg.type === 'paneReplaced') {
+    removePane(msg.old);
+    if (!panes.has(msg.pane.id)) buildPane(msg.pane);
+    applyOrder(msg.order);
+    setTimeout(() => nudgeOne(panes.get(msg.pane.id)), 400);
+  } else if (msg.type === 'relayed') {
+    const from = panes.get(msg.from), to = panes.get(msg.to);
+    toast(`relayed ${from ? paneTitle(from) : '?'} → ${to ? paneTitle(to) : '?'}`);
+  } else if (msg.type === 'round') {
+    renderCompare(msg);
+  } else if (msg.type === 'judging') {
+    const v = $('verdict');
+    v.classList.add('open');
+    v.textContent = '⚖ the judge is deliberating… (can take a minute)';
+  } else if (msg.type === 'judgement') {
+    const v = $('verdict');
+    v.classList.add('open');
+    v.textContent = msg.text;
+  } else if (msg.type === 'playbooks') {
+    playbooks = msg.items || [];
+    setPlaybooks();
+  }
+};
+ws.onclose = () => panes.forEach(p => p.term.write('\r\n\x1b[31m[server disconnected — restart VibeDeck and reload]\x1b[0m\r\n'));
+
+// ---------- playbooks ----------
+const playbookEl = $('playbook');
+function setPlaybooks() {
+  playbookEl.innerHTML = '<option value="">playbook ▾</option>'
+    + playbooks.map((p, i) => `<option value="${i}">${p.name}</option>`).join('');
+}
+playbookEl.addEventListener('change', () => {
+  const p = playbooks[Number(playbookEl.value)];
+  playbookEl.value = '';
+  if (!p) return;
+  promptEl.value = p.text + (p.text.endsWith(':') ? ' ' : '');
+  promptEl.focus();
+  promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
+});
+playbookEl.addEventListener('mousedown', () => send({ type: 'playbooks' }));
+
+// ---------- history ----------
+function renderHistory() {
+  const list = $('histList');
+  list.innerHTML = '';
+  [...history].reverse().forEach(h => {
+    const d = document.createElement('div');
+    d.className = 'h-item';
+    const ts = new Date(h.ts);
+    const when = `${ts.getMonth() + 1}/${ts.getDate()} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}`;
+    d.innerHTML = `<span class="h-ts">${when}</span><span class="h-text"></span><button class="h-del" title="delete">&times;</button>`;
+    d.querySelector('.h-text').textContent = h.text;
+    d.addEventListener('click', () => {
+      promptEl.value = h.text;
+      $('histOverlay').classList.remove('open');
+      promptEl.focus();
+    });
+    d.querySelector('.h-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      send({ type: 'histdel', ts: h.ts });
+      history = history.filter(x => x.ts !== h.ts);
+      d.remove();
+    });
+    list.appendChild(d);
+  });
+  if (!history.length) list.innerHTML = '<div class="h-item">no prompts yet</div>';
+}
+$('histBtn').addEventListener('click', () => {
+  renderHistory();
+  $('histOverlay').classList.add('open');
+});
+$('histClose').addEventListener('click', () => $('histOverlay').classList.remove('open'));
+
+// ---------- compare + judge ----------
+const WINS_KEY = 'vibedeck-wins';
+const getWins = () => { try { return JSON.parse(localStorage.getItem(WINS_KEY)) || {}; } catch { return {}; } };
+$('cmpBtn').addEventListener('click', () => send({ type: 'round' }));
+$('cmpClose').addEventListener('click', () => $('cmpOverlay').classList.remove('open'));
+$('judgeBtn').addEventListener('click', () => send({ type: 'judge' }));
+
+function renderCompare(round) {
+  const cols = $('cmpCols');
+  cols.innerHTML = '';
+  $('verdict').classList.remove('open');
+  $('cmpPrompt').textContent = round.prompt || 'no round yet — broadcast something first';
+  const wins = getWins();
+  const rs = round.responses || [];
+  cols.style.gridTemplateColumns = `repeat(${Math.max(rs.length, 1)}, 1fr)`;
+  if (!rs.length) cols.innerHTML = '<div class="cmp-col"><div class="cmp-body">Nothing to compare yet. Type a prompt up top, hit Enter, let the deck answer, then hit compare.</div></div>';
+  rs.forEach(r => {
+    const col = document.createElement('div');
+    col.className = 'cmp-col';
+    col.innerHTML = `
+      <div class="col-head" style="color:${color(r.kind)}">
+        ${r.label}<span class="wins">W:${wins[r.kind] || 0}</span>
+        <button class="win">winner 🏆</button>
+      </div>
+      <div class="cmp-body"></div>`;
+    col.querySelector('.cmp-body').textContent = r.text || '(no output captured)';
+    col.querySelector('.win').addEventListener('click', () => {
+      const w = getWins();
+      w[r.kind] = (w[r.kind] || 0) + 1;
+      localStorage.setItem(WINS_KEY, JSON.stringify(w));
+      cols.querySelectorAll('.cmp-col').forEach(c => c.classList.remove('winner'));
+      col.classList.add('winner');
+      col.querySelector('.wins').textContent = `W:${w[r.kind]}`;
+    });
+    cols.appendChild(col);
+  });
+  $('cmpOverlay').classList.add('open');
+}
+
+// ---------- prompt bar ----------
+promptEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && promptEl.value.trim()) {
+    const text = promptEl.value;
+    const targets = [...panes.values()].filter(p => p.broadcast).map(p => p.id);
+    send({ type: 'broadcast', data: text, targets });
+    history.push({ ts: Date.now(), text });
+    histIdx = -1;
+    promptEl.value = '';
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!history.length) return;
+    histIdx = Math.min(histIdx + 1, history.length - 1);
+    promptEl.value = history[history.length - 1 - histIdx].text;
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    histIdx = Math.max(histIdx - 1, -1);
+    promptEl.value = histIdx === -1 ? '' : history[history.length - 1 - histIdx].text;
+  }
+});
+
+// ---------- terminal plumbing ----------
+function fitAll() {
+  panes.forEach(p => {
+    try {
+      p.fit.fit();
+      send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows });
+    } catch {}
+  });
+}
+// shrink-then-restore forces full-screen TUIs to repaint cleanly
+function nudgeOne(p) {
+  if (!p) return;
+  send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows - 1 });
+  setTimeout(() => {
+    send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows });
+    p.term.scrollToBottom();
+  }, 120);
+}
+function nudgeAll() { fitAll(); panes.forEach(nudgeOne); }
+
+let fitTimer;
+new ResizeObserver(() => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fitAll, 100);
+}).observe(panesEl);
+
+// global shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if ($('cmpOverlay').classList.contains('open')) { $('cmpOverlay').classList.remove('open'); return; }
+    if ($('histOverlay').classList.contains('open')) { $('histOverlay').classList.remove('open'); return; }
+  }
+  if (e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
+    e.preventDefault();
+    const pane = [...panes.values()][Number(e.key) - 1];
+    pane?.term.focus();
+  } else if (e.ctrlKey && e.key === '0') {
+    // Ctrl+0 returns to the prompt bar (Esc stays free — the CLIs use it to interrupt)
+    e.preventDefault();
+    promptEl.focus();
+  }
+});
+</script>
+</body>
+</html>
