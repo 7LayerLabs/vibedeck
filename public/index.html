@@ -73,8 +73,10 @@
     padding: 1px 6px; cursor: pointer; }
   .pane-head button:hover { color: var(--text); border-color: var(--dim); }
   .pane-head button.bc.on { color: var(--accent); border-color: var(--accent); }
+  .pane-head button.yolo.on { color: var(--warn); border-color: var(--warn); }
   .pane-head button.x:hover { color: var(--bad); border-color: var(--bad); }
   .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--accent); }
+  .pane.dropping { outline: 2px dashed var(--accent); outline-offset: -3px; }
   .term { flex: 1; min-height: 0; padding: 4px 0 4px 6px; }
 
   /* ---- overlays (compare + history) ---- */
@@ -142,6 +144,7 @@
     <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
     <select id="pipeline" title="type a prompt, then pick a chain — each step's answer feeds the next pane (edit pipelines/*.json)"><option value="">pipeline ▾</option></select>
     <span id="pipeChip"><span class="pc-text"></span><button class="pc-x" title="cancel pipeline (current pane keeps running)">&times;</button></span>
+    <button id="modelsBtn" title="refresh model lists from the CLIs (grok live, claude/codex via their /model menu)">⟳ models</button>
     <button id="cmpBtn" title="see each model's answer to the last broadcast side by side">compare</button>
     <button id="histBtn" title="prompt history">history</button>
   </div>
@@ -176,28 +179,26 @@
 <script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
 <script>
 const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7' };
-// Per-kind dropdowns, all verified against the real CLIs. Edit lists freely.
+// Per-kind dropdowns. Choices live in models.json on the server (⟳ refreshes them).
 // mode 'slash':    types the slash command into the running session (no restart)
 // mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
 const KNOBS = {
   claude: [
-    { mode: 'slash', cmd: '/model',  placeholder: 'model ▾',  choices: ['fable', 'opus', 'sonnet', 'haiku'] },
-    { mode: 'slash', cmd: '/effort', placeholder: 'effort ▾', choices: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    { mode: 'slash', cmd: '/model',  placeholder: 'model ▾',  list: 'models' },
+    { mode: 'slash', cmd: '/effort', placeholder: 'effort ▾', list: 'efforts' },
   ],
   codex: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾',
-      choices: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'] },
-    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort ▾',
-      choices: ['low', 'medium', 'high', 'xhigh'] },
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾', list: 'models' },
+    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort ▾', list: 'efforts' },
   ],
   grok: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾',
-      choices: ['grok-4.5', 'grok-composer-2.5-fast'] },
-    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾',
-      choices: ['low', 'medium', 'high'] },
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾', list: 'models' },
+    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾', list: 'efforts' },
   ],
   shell: [],
 };
+let modelsCfg = {}; // kind -> { models: [], efforts: [] }, from the server
+const choicesFor = (kind, knob) => (modelsCfg[kind] || {})[knob.list] || [];
 const THEME = { background: '#16181d', foreground: '#d8dee9', cursor: '#7aa2f7', selectionBackground: '#33415580' };
 
 const ws = new WebSocket(`ws://${location.host}`);
@@ -238,6 +239,7 @@ function buildPane(info) {
       <select class="cli" title="change this pane's CLI (new session)"></select>
       <span class="inst"></span>
       <span class="knobs"></span>
+      <button class="yolo" title="skip permissions (dangerous) — toggling restarts this CLI">yolo</button>
       <span class="key"></span>
       <span class="spacer"></span>
       <select class="relay" title="send this pane's last answer to another pane"><option value="">→ relay ▾</option></select>
@@ -305,6 +307,7 @@ function buildPane(info) {
   // All relaunch knobs combine into one flag string so changing effort keeps the model choice.
   const knobsEl = el.querySelector('.knobs');
   const relaunchKnobs = [];
+  pane.knobSels = [];
   const relaunchArgs = () => relaunchKnobs
     .map(({ knob, sel }) => sel.value ? knob.argTemplate.replace('{v}', sel.value) : '')
     .filter(Boolean).join(' ');
@@ -313,10 +316,12 @@ function buildPane(info) {
     sel.className = 'opt';
     const storeKey = `vibedeck-${info.kind}-${(knob.cmd || knob.argTemplate).replace(/[^a-z]/gi, '')}`;
     const saved = localStorage.getItem(storeKey) || '';
+    const choices = choicesFor(info.kind, knob);
     sel.innerHTML = `<option value="">${knob.placeholder}</option>`
-      + knob.choices.map(c => `<option value="${c}">${c}</option>`).join('');
-    if (saved && knob.choices.includes(saved)) sel.value = saved;
+      + choices.map(c => `<option value="${c}">${c}</option>`).join('');
+    if (saved && choices.includes(saved)) sel.value = saved;
     if (knob.mode === 'relaunch') relaunchKnobs.push({ knob, sel });
+    pane.knobSels.push({ knob, sel });
     sel.addEventListener('change', () => {
       const v = sel.value;
       if (!v) return;
@@ -329,6 +334,38 @@ function buildPane(info) {
       }
     });
     knobsEl.appendChild(sel);
+  }
+
+  // images: drop onto the pane or paste (Ctrl+V) while it's focused — the
+  // server saves the file and types its path into the CLI's input
+  const sendImage = (file) => {
+    if (!file || !file.type.startsWith('image/')) return false;
+    const rd = new FileReader();
+    rd.onload = () => send({ type: 'image', pane: info.id, name: file.name || 'pasted.png', data: rd.result });
+    rd.readAsDataURL(file);
+    return true;
+  };
+  el.addEventListener('dragover', (e) => { e.preventDefault(); el.classList.add('dropping'); });
+  el.addEventListener('dragleave', () => el.classList.remove('dropping'));
+  el.addEventListener('drop', (e) => {
+    e.preventDefault();
+    el.classList.remove('dropping');
+    [...(e.dataTransfer?.files || [])].forEach(sendImage);
+  });
+  term.textarea.addEventListener('paste', (e) => {
+    const img = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+    if (img && sendImage(img.getAsFile())) { e.preventDefault(); e.stopImmediatePropagation(); }
+  });
+
+  // yolo toggle: relaunch this pane with/without its CLI's skip-permissions flag
+  const yoloBtn = el.querySelector('.yolo');
+  pane.yolo = info.yolo !== false;
+  const rosterEntry = roster.find(r => r.id === info.kind);
+  if (rosterEntry && rosterEntry.hasYolo) {
+    yoloBtn.classList.toggle('on', pane.yolo);
+    yoloBtn.addEventListener('click', () => send({ type: 'yolo', pane: info.id, on: !pane.yolo }));
+  } else {
+    yoloBtn.remove(); // shell has no permissions concept
   }
 
   const bcBtn = el.querySelector('.bc');
@@ -474,6 +511,7 @@ ws.onmessage = (ev) => {
     roster = msg.roster; maxPanes = msg.maxPanes;
     history = msg.history || []; playbooks = msg.playbooks || [];
     pipelines = msg.pipelines || [];
+    modelsCfg = msg.models || {};
     setPlaybooks();
     setPipelines();
     if (!panes.size) msg.panes.forEach(p => buildPane(p));
@@ -503,6 +541,16 @@ ws.onmessage = (ev) => {
     if (!panes.has(msg.pane.id)) buildPane(msg.pane);
     applyOrder(msg.order);
     setTimeout(() => nudgeOne(panes.get(msg.pane.id)), 400);
+  } else if (msg.type === 'yolo') {
+    const p = panes.get(msg.pane);
+    if (p) {
+      p.yolo = msg.on;
+      p.el.querySelector('.yolo')?.classList.toggle('on', msg.on);
+      toast(`${paneTitle(p)} restarting ${msg.on ? 'WITH skip-permissions' : 'with permission prompts back on'}`);
+    }
+  } else if (msg.type === 'imageSaved') {
+    const p = panes.get(msg.pane);
+    toast(`🖼 ${msg.file} → ${p ? paneTitle(p) : msg.pane} (path typed into its input)`);
   } else if (msg.type === 'relayed') {
     const from = panes.get(msg.from), to = panes.get(msg.to);
     toast(`relayed ${from ? paneTitle(from) : '?'} → ${to ? paneTitle(to) : '?'}`);
@@ -522,6 +570,12 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'pipelines') {
     pipelines = msg.items || [];
     setPipelines();
+  } else if (msg.type === 'modelsUpdating') {
+    toast('⟳ refreshing model lists… (watch the /model menus flash)');
+  } else if (msg.type === 'models') {
+    modelsCfg = msg.config || {};
+    repopulateKnobs();
+    toast(`models: ${msg.report}`);
   } else if (msg.type === 'pipeline') {
     const chip = $('pipeChip');
     if (msg.state === 'step') {
@@ -551,6 +605,18 @@ playbookEl.addEventListener('change', () => {
   promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
 });
 playbookEl.addEventListener('mousedown', () => send({ type: 'playbooks' }));
+
+// ---------- models refresh ----------
+function repopulateKnobs() {
+  panes.forEach(p => (p.knobSels || []).forEach(({ knob, sel }) => {
+    const cur = sel.value;
+    const choices = choicesFor(p.kind, knob);
+    sel.innerHTML = `<option value="">${knob.placeholder}</option>`
+      + choices.map(c => `<option value="${c}">${c}</option>`).join('');
+    if (choices.includes(cur)) sel.value = cur;
+  }));
+}
+$('modelsBtn').addEventListener('click', () => send({ type: 'updateModels' }));
 
 // ---------- pipelines ----------
 const pipelineEl = $('pipeline');

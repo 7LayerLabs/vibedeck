@@ -1,3 +1,53 @@
+# Project: VibeDeck — skip-permissions everywhere + ⟳ update models
+
+## Problem Statement
+Claude panes bypass permissions only via Derek's global settings; codex/grok
+still stop to ask. And model lists are hard-coded in index.html KNOBS, so new
+releases require a code edit.
+
+## Plan
+- [x] Task 1: per-CLI skip-permissions flags in ROSTER (claude
+      --dangerously-skip-permissions, codex
+      --dangerously-bypass-approvals-and-sandbox, grok --always-approve),
+      applied at every spawn; auto-accept claude's bypass warning dialog
+      (send "2" — plain Enter would pick "No, exit")
+- [x] Task 2: models.json = source of truth for model/effort lists; served in
+      init; client KNOBS reads choices from it
+- [x] Task 3: ⟳ update models button — grok via `grok models` (authoritative),
+      claude/codex by opening /model in their live pane, scraping the painted
+      menu, Esc to close; sane-parse guard keeps old list on unclear scrape;
+      results saved to models.json + broadcast, dropdowns repopulate live
+- [x] Task 4: restart + verify all panes boot yolo, run update-models e2e
+- [x] Task 5 (added mid-flight): image paste/drag — drop or Ctrl+V an image on
+      a pane; server saves to data/images/ and types the path into the CLI
+
+## Review
+### Changes Made
+- Verified via e2e ws client: claude/codex boot fine with yolo flags; ⟳ report
+  "grok 2 (live) · claude 4 (scraped) · codex pane busy — kept old" (busy pane
+  = honest soft-fail, click ⟳ again); image saved + path typed into claude.
+- Scrape bug found: stripAnsi without cursor-move segmentation fuses menu text
+  ("opusopus4", "gpt-5.4Strong"). Extracted segmentAnsi() (CUF→space, CUP→\n)
+  now shared by cleanTui and the scraper; codex regex is case-sensitive so a
+  fused capitalized description ends the match; claude alias = first word of
+  each numbered menu entry, lowercased. Scrapes needing trust: ≥2 models.
+- models.json is runtime-updated → gitignored; code defaults cover fresh clones.
+
+- Follow-ups from Derek watching the UI: per-pane "yolo" toggle button next to
+  the knobs (amber when on, default on, restart applies it; hidden for shell);
+  no-cache static serving (stale UI was why ⟳ looked missing); scrape retries
+  3x when a pane is busy — codex now discovers gpt-5.6-sol/terra/luna.
+- Image drop/paste verified e2e: file saved to data/images/, path typed into
+  the pane's CLI input.
+
+### Notes
+- Esc cancels claude's /model picker without changing the model — the ⟳ scrape
+  is safe mid-session, panes just show the menu flash open/closed.
+- claude's bypass-warning dialog (first run only) defaults to "No, exit"; the
+  auto-accept types "2", never plain Enter.
+
+---
+
 # Project: VibeDeck — Auto-Pipelines
 
 ## Problem Statement

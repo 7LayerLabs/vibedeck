@@ -14,21 +14,27 @@ const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.jsonl');
 const PLAYBOOK_DIR = path.join(__dirname, 'playbooks');
 const PIPELINE_DIR = path.join(__dirname, 'pipelines');
+const IMAGE_DIR = path.join(DATA_DIR, 'images');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(PLAYBOOK_DIR, { recursive: true });
 fs.mkdirSync(PIPELINE_DIR, { recursive: true });
+fs.mkdirSync(IMAGE_DIR, { recursive: true });
 
 // The kinds of CLI a pane can run. Any kind can run in multiple panes at once.
 // ready: the pane isn't accepting typed prompts until this paints (dialogs/init eat input).
 // Patterns are space-elastic (\s*) because Ink paints sometimes swallow spaces.
 const NPM_BIN = path.join(process.env.APPDATA || '', 'npm');
+// flags: every pane launches in its CLI's skip-permissions mode
 const ROSTER = [
-  { id: 'claude', label: 'CLAUDE', cmd: path.join(NPM_BIN, 'claude.cmd'), ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
-  { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  ready: /gpt-[\d.]|› / },
-  { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', ready: /grok-|Shift\+Tab/i },
+  { id: 'claude', label: 'CLAUDE', cmd: path.join(NPM_BIN, 'claude.cmd'), flags: '--dangerously-skip-permissions', ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
+  { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
+  { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
+// claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
+// kill the pane; typing "2" selects "Yes, I accept"
+const BYPASS_WARN = /Bypass\s*Permissions\s*mode/i;
 const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
 const MAX_PANES = 4;
 const BUFFER_MAX = 400 * 1024;
@@ -66,6 +72,11 @@ function stripAnsi(s) {
     .replace(/\x1b[()][A-Z0-9]/g, '')
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
+// cursor-forward → space, cursor-positioning → newline, then strip: Ink paints
+// use cursor moves instead of spaces/newlines, so plain stripAnsi fuses words
+function segmentAnsi(s) {
+  return stripAnsi(s.replace(/\x1b\[\d*C/g, ' ').replace(/\x1b\[[0-9;]*[HfABEFd]/g, '\n'));
+}
 // symbol-only lines (borders, spinners) and TUI chrome get dropped
 const SYMBOL_LINE = new RegExp('^[-=>.*\\s' +
   '\\u2500\\u2502\\u256D\\u256E\\u2570\\u256F\\u2594\\u2581\\u2590\\u258C\\u259B\\u259C\\u259D\\u2598\\u2588' +
@@ -76,10 +87,7 @@ function cleanTui(s, prompt) {
   // words fuse: "AgreatTUIapp"), and cursor-positioning (CUP, up/down) becomes a
   // newline — claude repaints whole screens with those, so stripping alone fuses
   // every screen line into one mega-line and the filters below nuke real content
-  const segmented = s
-    .replace(/\x1b\[\d*C/g, ' ')
-    .replace(/\x1b\[[0-9;]*[HfABEFd]/g, '\n');
-  const lines = stripAnsi(segmented).split(/[\r\n]+/);
+  const lines = segmentAnsi(s).split(/[\r\n]+/);
   const out = [];
   const seen = new Set();
   const norm = x => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -105,7 +113,11 @@ function cleanTui(s, prompt) {
 
 // ---------- server ----------
 const app = express();
-app.use(express.static(path.join(__dirname, 'public')));
+// no-cache so a plain reload always gets the current UI after an upgrade
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false, lastModified: false,
+  setHeaders: res => res.set('Cache-Control', 'no-cache'),
+}));
 app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules', '@xterm', 'xterm')));
 app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-fit')));
 app.use('/vendor/addon-webgl', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-webgl')));
@@ -122,10 +134,11 @@ function broadcastWs(msg) {
   for (const client of wss.clients) if (client.readyState === 1) client.send(raw);
 }
 
-function spawnPane(kindId, instanceId, extraArgs) {
+function spawnPane(kindId, instanceId, extraArgs, yolo) {
   const entry = kindOf(kindId);
   const id = instanceId || `${kindId}-${++instanceSeq}`;
-  const cmd = entry.cmd + (extraArgs ? ' ' + extraArgs : '');
+  yolo = yolo !== false; // skip-permissions on unless the pane's toggle turned it off
+  const cmd = entry.cmd + (entry.flags && yolo ? ' ' + entry.flags : '') + (extraArgs ? ' ' + extraArgs : '');
   slog(`spawn ${id}: ${cmd}`);
   let proc;
   try {
@@ -139,12 +152,12 @@ function spawnPane(kindId, instanceId, extraArgs) {
   } catch (e) {
     slog(`spawn FAILED ${id}: ${e.message}`);
     const dead = { kind: kindId, proc: null, buffer: `[failed to launch: ${e.message}]`, alive: false,
-                   extraArgs: extraArgs || '', roundOut: '', inRound: false, lastDataTs: 0, queue: [] };
+                   extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false, lastDataTs: 0, queue: [] };
     sessions.set(id, dead);
     setTimeout(() => broadcastWs({ type: 'exit', pane: id, code: -1 }), 100);
     return id;
   }
-  const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', roundOut: '', inRound: false,
+  const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false,
                     lastDataTs: Date.now(), queue: [] };
   sessions.set(id, session);
 
@@ -160,6 +173,13 @@ function spawnPane(kindId, instanceId, extraArgs) {
       session.trustHandled = true;
       slog(`trust dialog cleared for ${id}`);
       setTimeout(() => { if (session.alive) proc.write('\r'); }, 400);
+    }
+    // auto-accept the bypass-permissions warning (first run only; "2" = Yes)
+    if (kindId === 'claude' && !session.bypassHandled && session.buffer.length < 20000
+        && BYPASS_WARN.test(stripAnsi(session.buffer)) && /yes, i accept/i.test(stripAnsi(session.buffer))) {
+      session.bypassHandled = true;
+      slog(`bypass warning accepted for ${id}`);
+      setTimeout(() => { if (session.alive) proc.write('2'); }, 400);
     }
     broadcastWs({ type: 'data', pane: id, data });
   });
@@ -212,7 +232,7 @@ function reorderSessions(order) {
 
 const paneInfo = id => {
   const s = sessions.get(id);
-  return { id, kind: s.kind, label: kindOf(s.kind).label };
+  return { id, kind: s.kind, label: kindOf(s.kind).label, yolo: s.yolo !== false };
 };
 
 function readHistory(n = 100) {
@@ -230,6 +250,89 @@ function readPlaybooks() {
       text: fs.readFileSync(path.join(PLAYBOOK_DIR, f), 'utf8').trim(),
     }));
   } catch { return []; }
+}
+
+// ---------- model lists (models.json = source of truth for the knob dropdowns) ----------
+const MODELS_FILE = path.join(__dirname, 'models.json');
+let modelsCfg = {
+  claude: { models: ['fable', 'opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+  codex:  { models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
+  grok:   { models: ['grok-4.5', 'grok-composer-2.5-fast'], efforts: ['low', 'medium', 'high'] },
+};
+try { modelsCfg = { ...modelsCfg, ...JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) }; } catch {}
+function saveModels() {
+  try { fs.writeFileSync(MODELS_FILE, JSON.stringify(modelsCfg, null, 2)); } catch (e) { slog(`models.json write failed: ${e.message}`); }
+}
+
+// grok is the only CLI that can list its models headlessly
+function grokModels() {
+  return new Promise(res => {
+    let child;
+    try { child = spawn(kindOf('grok').cmd, ['models'], { env: process.env }); } catch { return res([]); }
+    let out = '';
+    const timer = setTimeout(() => { try { child.kill(); } catch {} }, 15000);
+    child.stdout.on('data', d => out += d);
+    child.on('error', () => { clearTimeout(timer); res([]); });
+    child.on('close', () => {
+      clearTimeout(timer);
+      res([...out.matchAll(/^\s*[*-]\s+(\S+)/gm)].map(m => m[1]).filter(x => x.startsWith('grok')));
+    });
+  });
+}
+
+// claude/codex only expose their model list via the in-session /model picker:
+// type it into the live pane, scrape the painted menu, Esc to close
+function scrapeModelMenu(kind) {
+  return new Promise(res => {
+    const id = firstPaneOfKind(kind);
+    const s = id && sessions.get(id);
+    if (!s || !isReady(s)) return res(null); // no pane, or busy — don't type into it
+    const before = s.buffer.length;
+    s.proc.write('/model');
+    setTimeout(() => { if (s.alive) s.proc.write('\r'); }, 350);
+    setTimeout(() => {
+      const painted = segmentAnsi(s.buffer.slice(before));
+      if (s.alive) s.proc.write('\x1b');
+      res(painted);
+    }, 2200);
+  });
+}
+
+let updatingModels = false;
+async function updateModels() {
+  if (updatingModels) return;
+  updatingModels = true;
+  const report = [];
+  try {
+    const g = await grokModels();
+    if (g.length) { modelsCfg.grok.models = g; report.push(`grok ${g.length} (live)`); }
+    else report.push('grok failed — kept old');
+    for (const kind of ['claude', 'codex']) {
+      let painted = null;
+      for (let tries = 0; tries < 3 && painted === null; tries++) {
+        if (tries) await new Promise(r => setTimeout(r, 4000));
+        painted = await scrapeModelMenu(kind);
+      }
+      if (painted === null) { report.push(`${kind} pane busy/missing — kept old`); continue; }
+      let models;
+      if (kind === 'claude') {
+        // menu entries: "2. Opus  Opus 4.8 · …" — the /model alias is the first
+        // word, lowercased. [a-z]+ after the initial cap stops at descriptions.
+        models = [...new Set([...painted.matchAll(/\d+\.\s*([A-Za-z][a-z]+)/g)]
+          .map(m => m[1].toLowerCase()).filter(n => !['default', 'custom'].includes(n)))];
+      } else {
+        // case-sensitive so a fused capitalized description ("gpt-5.4Strong") ends the match
+        models = [...new Set([...painted.matchAll(/gpt-[a-z0-9.]+(?:-[a-z0-9.]+)*/g)]
+          .map(m => m[0].replace(/[.-]+$/, '')))];
+      }
+      // the pane chrome alone shows the CURRENT model, so demand at least 2 to trust a scrape
+      if (models.length >= 2) { modelsCfg[kind].models = models; report.push(`${kind} ${models.length} (scraped)`); }
+      else report.push(`${kind} scrape unclear — kept old`);
+    }
+    saveModels();
+  } finally { updatingModels = false; }
+  slog(`update models: ${report.join(' · ')}`);
+  broadcastWs({ type: 'models', config: modelsCfg, report: report.join(' · ') });
 }
 
 function readPipelines() {
@@ -376,13 +479,14 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
     panes: [...sessions.keys()].map(paneInfo),
-    roster: ROSTER.map(r => ({ id: r.id, label: r.label })),
+    roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: !!r.flags })),
     maxPanes: MAX_PANES,
     cwd: state.cwd,
     recents: state.recents,
     history: readHistory(),
     playbooks: readPlaybooks(),
     pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
+    models: modelsCfg,
   }));
   if (pipeline) ws.send(JSON.stringify({ type: 'pipeline', state: 'step', name: pipeline.def.name,
     step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
@@ -403,6 +507,20 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'input' && s && s.alive) {
       s.proc.write(msg.data);
+    } else if (msg.type === 'image' && s && s.alive) {
+      // pasted/dropped image: save to disk, type the path into the CLI's input
+      // (a PTY can't take pixels — the CLIs all read image paths from prompts)
+      const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(msg.data || ''));
+      if (!m) return;
+      const buf = Buffer.from(m[2], 'base64');
+      if (!buf.length || buf.length > 15 * 1024 * 1024) return;
+      const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+      const safe = String(msg.name || 'image').replace(/\.[^.]*$/, '').replace(/[^\w-]+/g, '_').slice(0, 40) || 'image';
+      const file = path.join(IMAGE_DIR, `${Date.now()}-${safe}.${ext}`);
+      fs.writeFileSync(file, buf);
+      slog(`image saved for ${msg.pane}: ${file} (${buf.length} bytes)`);
+      s.proc.write(file + ' ');
+      broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
       const targets = msg.targets.filter(id => sessions.get(id)?.alive);
       lastRound = { ts: Date.now(), prompt: msg.data, targets };
@@ -444,6 +562,9 @@ wss.on('connection', (ws) => {
       if (!prompt) return;
       try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), text: prompt }) + '\n'); } catch {}
       startPipeline(msg.name, prompt);
+    } else if (msg.type === 'updateModels') {
+      broadcastWs({ type: 'modelsUpdating' });
+      updateModels();
     } else if (msg.type === 'pipelineCancel') {
       if (pipeline) { slog(`pipeline cancelled: ${pipeline.def.name}`); endPipeline('cancelled', 'cancelled — the current pane keeps running, later steps are dropped'); }
     } else if (msg.type === 'setcwd') {
@@ -458,7 +579,7 @@ wss.on('connection', (ws) => {
         const order = [...sessions.keys()];
         if (sess.alive) { try { sess.proc.kill(); } catch {} }
         sessions.delete(id);
-        spawnPane(sess.kind, id, sess.extraArgs);
+        spawnPane(sess.kind, id, sess.extraArgs, sess.yolo);
         reorderSessions(order);
       }
       saveState();
@@ -471,9 +592,18 @@ wss.on('connection', (ws) => {
       if (s.alive) { try { s.proc.kill(); } catch {} }
       sessions.delete(msg.pane);
       // optional msg.args relaunches with new CLI flags (e.g. codex -m gpt-5.4); otherwise keep prior flags
-      spawnPane(s.kind, msg.pane, typeof msg.args === 'string' ? msg.args : s.extraArgs);
+      spawnPane(s.kind, msg.pane, typeof msg.args === 'string' ? msg.args : s.extraArgs, s.yolo);
       reorderSessions(order);
       broadcastWs({ type: 'restarted', pane: msg.pane });
+    } else if (msg.type === 'yolo' && s) {
+      // per-pane skip-permissions toggle: relaunch this pane with/without its flag
+      const order = [...sessions.keys()];
+      if (s.alive) { try { s.proc.kill(); } catch {} }
+      sessions.delete(msg.pane);
+      spawnPane(s.kind, msg.pane, s.extraArgs, !!msg.on);
+      reorderSessions(order);
+      broadcastWs({ type: 'restarted', pane: msg.pane });
+      broadcastWs({ type: 'yolo', pane: msg.pane, on: !!msg.on });
     } else if (msg.type === 'add') {
       if (!kindOf(msg.kind) || sessions.size >= MAX_PANES) return;
       const id = spawnPane(msg.kind);

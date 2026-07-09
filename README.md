@@ -9,7 +9,9 @@ A terminal cockpit for vibe coders. One prompt bar on top, up to four live AI CL
 - **Broadcast**: type in the top bar, hit Enter, and the prompt is typed into every pane (Claude Code, Codex, Grok — any terminal AI CLI).
 - **Panes are real terminals**: xterm.js + a real PTY per pane. Click in and type like normal.
 - **1–4 panes**, any mix — including the same CLI more than once (three Claudes, why not).
-- **Model / effort dropdowns** per pane: Claude switches in-session via `/model` and `/effort`; Codex and Grok relaunch with `-m` flags (their CLIs can't switch mid-session).
+- **Model / effort dropdowns** per pane: Claude switches in-session via `/model` and `/effort`; Codex and Grok relaunch with `-m` flags (their CLIs can't switch mid-session). Lists live in `models.json`; the **⟳ models** button refreshes them from the CLIs themselves (Grok via `grok models`, Claude/Codex by scraping their `/model` menus) — so new releases show up without touching code.
+- **Yolo by default**: every pane launches with its CLI's skip-permissions flag (claude `--dangerously-skip-permissions`, codex `--dangerously-bypass-approvals-and-sandbox`, grok `--always-approve`) — no approval prompts interrupting broadcasts.
+- **Images**: drag an image onto a pane or paste one (Ctrl+V) while it's focused — VibeDeck saves it to `data/images/` and types the file path into that CLI's input, ready to submit.
 - **Compare**: see each model's answer to the last broadcast side by side, crown a winner, and keep a running tally.
 - **Judge**: a headless `claude -p` call rules on the round — winner, what each answer missed, and a merged best take.
 - **Relay**: pipe one pane's answer into another pane as its next prompt. Claude plans, Codex builds, Grok reviews.
