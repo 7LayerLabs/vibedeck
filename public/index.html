@@ -79,25 +79,6 @@
   .ov-head button { background: var(--bg-panel); border: 1px solid var(--border); color: var(--text);
     font: inherit; font-size: 12px; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
   .ov-head button:hover { border-color: var(--accent); }
-  #cmpCols { flex: 1; display: grid; gap: 10px; min-height: 0; }
-  .cmp-col { display: flex; flex-direction: column; min-width: 0; min-height: 0;
-    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-  .cmp-col .col-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
-    border-bottom: 1px solid var(--border); font-weight: 700; letter-spacing: 1px; font-size: 12px; }
-  .cmp-col .col-head .wins { color: var(--dim); font-weight: 400; font-size: 11px; }
-  .cmp-col .col-head .race { margin-left: auto; color: var(--accent); font-size: 11px; font-weight: 400; }
-  .cmp-col .col-head button { background: none; border: 1px solid var(--border); color: var(--dim);
-    font: inherit; font-size: 11px; border-radius: 4px; padding: 1px 8px; cursor: pointer; }
-  .cmp-col .col-head button:hover { color: var(--ok); border-color: var(--ok); }
-  .cmp-col.winner { border-color: var(--ok); }
-  .cmp-col.winner .col-head { color: var(--ok); }
-  .cmp-body { flex: 1; overflow: auto; padding: 10px 12px; font-size: 12px;
-    white-space: pre-wrap; word-break: break-word; color: var(--text); line-height: 1.45; }
-  #verdict { display: none; max-height: 34%; overflow: auto; margin-top: 12px;
-    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 8px;
-    padding: 12px 14px; font-size: 12px; white-space: pre-wrap; line-height: 1.45; }
-  #verdict.open { display: block; }
-
   #histList { flex: 1; overflow: auto; }
   #histList .h-item { display: flex; align-items: center; gap: 10px;
     padding: 9px 12px; border-bottom: 1px solid var(--border);
@@ -126,21 +107,9 @@
       <option value="3">3 panes</option><option value="4">4 panes</option>
     </select>
     <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
-    <button id="cmpBtn" title="compare the last round side by side">compare</button>
     <button id="histBtn" title="prompt history">history</button>
   </div>
   <div id="panes"></div>
-</div>
-
-<div class="overlay" id="cmpOverlay">
-  <div class="ov-head">
-    <h2>compare</h2>
-    <span class="ov-prompt" id="cmpPrompt"></span>
-    <button id="judgeBtn" title="an AI judge rules on the round">⚖ judge</button>
-    <button id="cmpClose">close (esc)</button>
-  </div>
-  <div id="cmpCols"></div>
-  <div id="verdict"></div>
 </div>
 
 <div class="overlay" id="histOverlay">
@@ -487,16 +456,6 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'relayed') {
     const from = panes.get(msg.from), to = panes.get(msg.to);
     toast(`relayed ${from ? paneTitle(from) : '?'} → ${to ? paneTitle(to) : '?'}`);
-  } else if (msg.type === 'round') {
-    renderCompare(msg);
-  } else if (msg.type === 'judging') {
-    const v = $('verdict');
-    v.classList.add('open');
-    v.textContent = '⚖ the judge is deliberating… (can take a minute)';
-  } else if (msg.type === 'judgement') {
-    const v = $('verdict');
-    v.classList.add('open');
-    v.textContent = msg.text;
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || [];
     setPlaybooks();
@@ -552,45 +511,6 @@ $('histBtn').addEventListener('click', () => {
 });
 $('histClose').addEventListener('click', () => $('histOverlay').classList.remove('open'));
 
-// ---------- compare + judge ----------
-const WINS_KEY = 'vibedeck-wins';
-const getWins = () => { try { return JSON.parse(localStorage.getItem(WINS_KEY)) || {}; } catch { return {}; } };
-$('cmpBtn').addEventListener('click', () => send({ type: 'round' }));
-$('cmpClose').addEventListener('click', () => $('cmpOverlay').classList.remove('open'));
-$('judgeBtn').addEventListener('click', () => send({ type: 'judge' }));
-
-function renderCompare(round) {
-  const cols = $('cmpCols');
-  cols.innerHTML = '';
-  $('verdict').classList.remove('open');
-  $('cmpPrompt').textContent = round.prompt || 'no round yet — broadcast something first';
-  const wins = getWins();
-  const rs = round.responses || [];
-  cols.style.gridTemplateColumns = `repeat(${Math.max(rs.length, 1)}, 1fr)`;
-  if (!rs.length) cols.innerHTML = '<div class="cmp-col"><div class="cmp-body">Nothing to compare yet. Type a prompt up top, hit Enter, let the deck answer, then hit compare.</div></div>';
-  rs.forEach(r => {
-    const col = document.createElement('div');
-    col.className = 'cmp-col';
-    col.innerHTML = `
-      <div class="col-head" style="color:${color(r.kind)}">
-        ${r.label}<span class="wins">W:${wins[r.kind] || 0}</span>
-        <button class="win">winner 🏆</button>
-      </div>
-      <div class="cmp-body"></div>`;
-    col.querySelector('.cmp-body').textContent = r.text || '(no output captured)';
-    col.querySelector('.win').addEventListener('click', () => {
-      const w = getWins();
-      w[r.kind] = (w[r.kind] || 0) + 1;
-      localStorage.setItem(WINS_KEY, JSON.stringify(w));
-      cols.querySelectorAll('.cmp-col').forEach(c => c.classList.remove('winner'));
-      col.classList.add('winner');
-      col.querySelector('.wins').textContent = `W:${w[r.kind]}`;
-    });
-    cols.appendChild(col);
-  });
-  $('cmpOverlay').classList.add('open');
-}
-
 // ---------- prompt bar ----------
 promptEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && promptEl.value.trim()) {
@@ -640,9 +560,9 @@ new ResizeObserver(() => {
 
 // global shortcuts
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if ($('cmpOverlay').classList.contains('open')) { $('cmpOverlay').classList.remove('open'); return; }
-    if ($('histOverlay').classList.contains('open')) { $('histOverlay').classList.remove('open'); return; }
+  if (e.key === 'Escape' && $('histOverlay').classList.contains('open')) {
+    $('histOverlay').classList.remove('open');
+    return;
   }
   if (e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
     e.preventDefault();
