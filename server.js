@@ -59,7 +59,7 @@ function saveState() {
 // ---------- text cleanup for compare/relay/judge ----------
 function stripAnsi(s) {
   return s
-    .replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]/g, '')
+    .replace(/\x1b\[[0-9;?<>= ]*[a-zA-Z]/g, '') // space allowed: '\x1b[0 q' cursor-style seqs
     .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
     .replace(/\x1b[()][A-Z0-9]/g, '')
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
@@ -68,23 +68,32 @@ function stripAnsi(s) {
 const SYMBOL_LINE = new RegExp('^[-=>.*\\s' +
   '\\u2500\\u2502\\u256D\\u256E\\u2570\\u256F\\u2594\\u2581\\u2590\\u258C\\u259B\\u259C\\u259D\\u2598\\u2588' +
   '\\u23F5\\u00B7\\u25D0\\u25D3\\u25D1\\u25D2\\u273B\\u2736\\u273D\\u2722\\u25E6\\u203A\\u276F]+$');
-const CHROME_LINE = /esc to interrupt|bypass permissions|shift\+tab|tokens\)|\/status|\/effort|\/model|mcp server|claude max|working \(|^\W*\w+…/i;
-function cleanTui(s) {
-  // cursor-positioning sequences (CUP, cursor up/down) become newlines first —
-  // claude repaints whole screens with them, so stripping alone fuses every
-  // screen line into one mega-line and the filters below nuke real content
-  const segmented = s.replace(/\x1b\[[0-9;]*[HfABEFd]/g, '\n');
+const CHROME_LINE = /esc to interrupt|bypass permissions|shift\+tab|tokens\)|\/status|\/effort|\/model|mcp server|claude max|working \(|thinking with|↓ ?\d+ tokens|^\W*\w+…|^.{0,15}…$/i;
+function cleanTui(s, prompt) {
+  // cursor-forward becomes a space (Ink uses it instead of spaces — without this
+  // words fuse: "AgreatTUIapp"), and cursor-positioning (CUP, up/down) becomes a
+  // newline — claude repaints whole screens with those, so stripping alone fuses
+  // every screen line into one mega-line and the filters below nuke real content
+  const segmented = s
+    .replace(/\x1b\[\d*C/g, ' ')
+    .replace(/\x1b\[[0-9;]*[HfABEFd]/g, '\n');
   const lines = stripAnsi(segmented).split(/[\r\n]+/);
   const out = [];
   const seen = new Set();
+  const norm = x => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const promptKey = prompt ? norm(prompt).slice(0, 60) : null;
   for (const l of lines) {
     const t = l.trim();
     if (!t) { out.push(''); continue; }
+    if (!/[a-zA-Z]{3,}/.test(t)) continue; // spinner shrapnel: "o7", "* h g", "n 61"
+    if (/^\W{0,3}\w+ for \d+s$/.test(t)) continue; // "✻ Cogitated for 5s"
     if (SYMBOL_LINE.test(t)) continue;
     if (CHROME_LINE.test(t)) continue;
-    if (seen.has(t)) continue; // TUI repaints duplicate lines constantly
-    seen.add(t);
-    out.push(l.trimEnd());
+    const key = norm(t);
+    if (promptKey && key.includes(promptKey)) continue; // echo of the prompt itself
+    if (seen.has(key)) continue; // TUI repaints duplicate lines constantly
+    seen.add(key);
+    out.push(t.replace(/\s{2,}/g, ' '));
   }
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
@@ -219,7 +228,7 @@ function roundResponses() {
   if (!lastRound) return [];
   return lastRound.targets.filter(id => sessions.has(id)).map(id => {
     const s = sessions.get(id);
-    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text: cleanTui(s.roundOut), rawLen: s.roundOut.length };
+    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text: cleanTui(s.roundOut, lastRound.prompt), rawLen: s.roundOut.length };
   });
 }
 

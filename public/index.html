@@ -79,6 +79,30 @@
   .ov-head button { background: var(--bg-panel); border: 1px solid var(--border); color: var(--text);
     font: inherit; font-size: 12px; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
   .ov-head button:hover { border-color: var(--accent); }
+  /* ---- compare ---- */
+  #cmpPromptBox { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text); }
+  #cmpPromptBox .q { color: var(--dim); font-size: 11px; letter-spacing: 1px; margin-right: 8px; }
+  #cmpCols { flex: 1; display: grid; gap: 14px; min-height: 0; }
+  .cmp-col { display: flex; flex-direction: column; min-width: 0; min-height: 0;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+    border-top: 3px solid var(--border); overflow: hidden; }
+  .cmp-col .col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    font-weight: 700; letter-spacing: 1px; font-size: 13px; }
+  .cmp-col .col-head .wins { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .cmp-col .col-head .spacer { flex: 1; }
+  .cmp-col .col-head button { background: none; border: 1px solid var(--border); color: var(--dim);
+    font: inherit; font-size: 11px; border-radius: 5px; padding: 3px 10px; cursor: pointer; }
+  .cmp-col .col-head button:hover { color: var(--text); border-color: var(--dim); }
+  .cmp-col .col-head button.win:hover { color: var(--ok); border-color: var(--ok); }
+  .cmp-col.winner { border-color: var(--ok); border-top-color: var(--ok); }
+  .cmp-body { flex: 1; overflow: auto; padding: 4px 16px 14px; font-size: 13px;
+    white-space: pre-wrap; word-break: break-word; color: var(--text); line-height: 1.6; }
+  #verdict { display: none; max-height: 38%; overflow: auto; margin-top: 14px;
+    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 10px;
+    padding: 14px 16px; font-size: 13px; white-space: pre-wrap; line-height: 1.6; }
+  #verdict.open { display: block; }
+
   #histList { flex: 1; overflow: auto; }
   #histList .h-item { display: flex; align-items: center; gap: 10px;
     padding: 9px 12px; border-bottom: 1px solid var(--border);
@@ -107,9 +131,22 @@
       <option value="3">3 panes</option><option value="4">4 panes</option>
     </select>
     <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
+    <button id="cmpBtn" title="see each model's answer to the last broadcast side by side">compare</button>
     <button id="histBtn" title="prompt history">history</button>
   </div>
   <div id="panes"></div>
+</div>
+
+<div class="overlay" id="cmpOverlay">
+  <div class="ov-head">
+    <h2>compare</h2>
+    <span class="ov-prompt"></span>
+    <button id="judgeBtn" title="an AI judge picks a winner and merges the best ideas">⚖ judge</button>
+    <button id="cmpClose">close (esc)</button>
+  </div>
+  <div id="cmpPromptBox"><span class="q">YOU ASKED</span><span id="cmpPrompt"></span></div>
+  <div id="cmpCols"></div>
+  <div id="verdict"></div>
 </div>
 
 <div class="overlay" id="histOverlay">
@@ -456,6 +493,16 @@ ws.onmessage = (ev) => {
   } else if (msg.type === 'relayed') {
     const from = panes.get(msg.from), to = panes.get(msg.to);
     toast(`relayed ${from ? paneTitle(from) : '?'} → ${to ? paneTitle(to) : '?'}`);
+  } else if (msg.type === 'round') {
+    renderCompare(msg);
+  } else if (msg.type === 'judging') {
+    const v = $('verdict');
+    v.classList.add('open');
+    v.textContent = '⚖ the judge is reading all the answers… (can take a minute)';
+  } else if (msg.type === 'judgement') {
+    const v = $('verdict');
+    v.classList.add('open');
+    v.textContent = msg.text;
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || [];
     setPlaybooks();
@@ -511,6 +558,55 @@ $('histBtn').addEventListener('click', () => {
 });
 $('histClose').addEventListener('click', () => $('histOverlay').classList.remove('open'));
 
+// ---------- compare + judge ----------
+const WINS_KEY = 'vibedeck-wins';
+const getWins = () => { try { return JSON.parse(localStorage.getItem(WINS_KEY)) || {}; } catch { return {}; } };
+$('cmpBtn').addEventListener('click', () => send({ type: 'round' }));
+$('cmpClose').addEventListener('click', () => $('cmpOverlay').classList.remove('open'));
+$('judgeBtn').addEventListener('click', () => send({ type: 'judge' }));
+
+function renderCompare(round) {
+  const cols = $('cmpCols');
+  cols.innerHTML = '';
+  $('verdict').classList.remove('open');
+  $('cmpPrompt').textContent = round.prompt || 'nothing yet — broadcast a prompt first, let the models answer, then hit compare';
+  const wins = getWins();
+  const rs = (round.responses || []).filter(r => r.text);
+  cols.style.gridTemplateColumns = `repeat(${Math.max(rs.length, 1)}, 1fr)`;
+  if (!rs.length) {
+    cols.innerHTML = '<div class="cmp-col"><div class="cmp-body">No answers captured yet. Broadcast something, give the models a minute, then come back.</div></div>';
+  }
+  rs.forEach(r => {
+    const col = document.createElement('div');
+    col.className = 'cmp-col';
+    col.style.borderTopColor = color(r.kind);
+    col.innerHTML = `
+      <div class="col-head" style="color:${color(r.kind)}">
+        ${r.label}<span class="wins">${wins[r.kind] ? wins[r.kind] + ' wins' : ''}</span>
+        <span class="spacer"></span>
+        <button class="copy">copy</button>
+        <button class="win">winner 🏆</button>
+      </div>
+      <div class="cmp-body"></div>`;
+    col.querySelector('.cmp-body').textContent = r.text;
+    col.querySelector('.copy').addEventListener('click', (e) => {
+      navigator.clipboard.writeText(r.text);
+      e.target.textContent = 'copied ✓';
+      setTimeout(() => e.target.textContent = 'copy', 1500);
+    });
+    col.querySelector('.win').addEventListener('click', () => {
+      const w = getWins();
+      w[r.kind] = (w[r.kind] || 0) + 1;
+      localStorage.setItem(WINS_KEY, JSON.stringify(w));
+      cols.querySelectorAll('.cmp-col').forEach(c => c.classList.remove('winner'));
+      col.classList.add('winner');
+      col.querySelector('.wins').textContent = `${w[r.kind]} wins`;
+    });
+    cols.appendChild(col);
+  });
+  $('cmpOverlay').classList.add('open');
+}
+
 // ---------- prompt bar ----------
 promptEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && promptEl.value.trim()) {
@@ -560,9 +656,9 @@ new ResizeObserver(() => {
 
 // global shortcuts
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && $('histOverlay').classList.contains('open')) {
-    $('histOverlay').classList.remove('open');
-    return;
+  if (e.key === 'Escape') {
+    if ($('cmpOverlay').classList.contains('open')) { $('cmpOverlay').classList.remove('open'); return; }
+    if ($('histOverlay').classList.contains('open')) { $('histOverlay').classList.remove('open'); return; }
   }
   if (e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
     e.preventDefault();
