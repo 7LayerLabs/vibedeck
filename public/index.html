@@ -47,8 +47,14 @@
     font: inherit; font-size: 14px; cursor: pointer; padding: 0 2px; }
   #pipeChip .pc-x:hover { color: var(--bad); }
 
-  /* ---- panes ---- */
-  #panes { flex: 1; display: grid; min-height: 0; background: var(--border); }
+  /* ---- panes + meter sidebar ---- */
+  #main { flex: 1; display: flex; min-height: 0; }
+  #panes { flex: 1; display: grid; min-width: 0; min-height: 0; background: var(--border); }
+  #meterbar { width: 0; border-left: 1px solid var(--border); background: #101216;
+    overflow: hidden; transition: width .18s ease; flex: none; }
+  #meterbar.open { width: 340px; }
+  #meterbar iframe { width: 340px; height: 100%; border: 0; display: block; }
+  #promptbar button#meterBtn.on { color: var(--warn); border-color: var(--warn); }
   .split { background: var(--border); z-index: 5; }
   .split-col { cursor: col-resize; }
   .split-row { cursor: row-resize; }
@@ -78,7 +84,6 @@
   .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--accent); }
   .pane.dropping { outline: 2px dashed var(--accent); outline-offset: -3px; }
   .term { flex: 1; min-height: 0; padding: 4px 0 4px 6px; }
-  .meterframe { width: 100%; height: 100%; border: 0; background: #101216; display: block; }
 
   /* ---- overlays (compare + history) ---- */
   .overlay { position: fixed; inset: 0; background: #0c0d10ee; z-index: 50;
@@ -138,18 +143,22 @@
   <div id="promptbar">
     <span class="sigil">vibe&gt;</span>
     <input id="prompt" placeholder="type once, send to the whole deck… (Enter · ↑↓ history · Ctrl+0 here)" autofocus spellcheck="false">
-    <select id="paneCount" title="how many panes">
+    <select id="paneCount" title="how many panes (meter lives in the sidebar, not a pane)">
       <option value="1">1 pane</option><option value="2">2 panes</option>
       <option value="3">3 panes</option><option value="4">4 panes</option>
     </select>
     <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
     <select id="pipeline" title="type a prompt, then pick a chain — each step's answer feeds the next pane (edit pipelines/*.json)"><option value="">pipeline ▾</option></select>
     <span id="pipeChip"><span class="pc-text"></span><button class="pc-x" title="cancel pipeline (current pane keeps running)">&times;</button></span>
+    <button id="meterBtn" title="toggle the token meter sidebar (today's usage + api-rate cost)">⛽ meter</button>
     <button id="modelsBtn" title="refresh model lists from the CLIs (grok live, claude/codex via their /model menu)">⟳ models</button>
     <button id="cmpBtn" title="see each model's answer to the last broadcast side by side">compare</button>
     <button id="histBtn" title="prompt history">history</button>
   </div>
-  <div id="panes"></div>
+  <div id="main">
+    <div id="panes"></div>
+    <div id="meterbar"><iframe id="meterframe"></iframe></div>
+  </div>
 </div>
 
 <div class="overlay" id="cmpOverlay">
@@ -179,7 +188,7 @@
 <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
 <script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
 <script>
-const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7', meter: '#e0af68' };
+const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7' };
 // Per-kind dropdowns. Choices live in models.json on the server (⟳ refreshes them).
 // mode 'slash':    types the slash command into the running session (no restart)
 // mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
@@ -197,7 +206,6 @@ const KNOBS = {
     { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾', list: 'efforts' },
   ],
   shell: [],
-  meter: [], // the meter page has its own checkboxes
 };
 let modelsCfg = {}; // kind -> { models: [], efforts: [] }, from the server
 const choicesFor = (kind, knob) => knob.choices || (modelsCfg[kind] || {})[knob.list] || [];
@@ -254,35 +262,26 @@ function buildPane(info) {
     <div class="term"></div>`;
   panesEl.appendChild(el);
 
-  let term = null, fit = null;
-  if (info.kind === 'meter') {
-    // no terminal — the meter is a live HTML dashboard in an iframe
-    el.querySelector('.term').innerHTML = '<iframe class="meterframe" src="/meter"></iframe>';
-    el.querySelector('.term').style.padding = '0';
-  } else {
-    term = new Terminal({
-      theme: THEME, fontSize: 13, lineHeight: 1.15,
-      fontFamily: '"Cascadia Code", Consolas, monospace',
-      cursorBlink: true, scrollback: 8000, allowProposedApi: true,
-    });
-    fit = new FitAddon.FitAddon();
-    term.loadAddon(fit);
-    term.open(el.querySelector('.term'));
-    // WebGL renderer: the DOM renderer smears full-screen TUI redraws
-    try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { console.warn('webgl unavailable', e); }
-    fit.fit();
+  const term = new Terminal({
+    theme: THEME, fontSize: 13, lineHeight: 1.15,
+    fontFamily: '"Cascadia Code", Consolas, monospace',
+    cursorBlink: true, scrollback: 8000, allowProposedApi: true,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(el.querySelector('.term'));
+  // WebGL renderer: the DOM renderer smears full-screen TUI redraws
+  try { term.loadAddon(new WebglAddon.WebglAddon()); } catch (e) { console.warn('webgl unavailable', e); }
+  fit.fit();
 
-    term.onData(d => send({ type: 'input', pane: info.id, data: d }));
-    term.textarea.addEventListener('focus', () => {
-      document.querySelectorAll('.pane').forEach(p => p.classList.remove('focused'));
-      el.classList.add('focused');
-    });
-    term.textarea.addEventListener('blur', () => el.classList.remove('focused'));
-  }
+  term.onData(d => send({ type: 'input', pane: info.id, data: d }));
+  term.textarea.addEventListener('focus', () => {
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('focused'));
+    el.classList.add('focused');
+  });
+  term.textarea.addEventListener('blur', () => el.classList.remove('focused'));
 
-  // meter panes don't take prompts — broadcast off, no prompt-related buttons
-  const pane = { term, fit, el, broadcast: info.kind !== 'meter', id: info.id, kind: info.kind, label: info.label, dead: false };
-  if (info.kind === 'meter') ['.bc', '.rs', '.relay'].forEach(sel => el.querySelector(sel)?.remove());
+  const pane = { term, fit, el, broadcast: true, id: info.id, kind: info.kind, label: info.label, dead: false };
 
   // CLI dropdown: picking a kind replaces this pane with a fresh instance of it
   const cliSel = el.querySelector('.cli');
@@ -508,7 +507,7 @@ paneCountEl.addEventListener('change', () => {
   const want = Number(paneCountEl.value), cur = panes.size;
   if (want > cur) {
     const activeKinds = new Set([...panes.values()].map(p => p.kind));
-    const fresh = roster.filter(r => r.id !== 'shell' && r.id !== 'meter' && !activeKinds.has(r.id)).map(r => r.id);
+    const fresh = roster.filter(r => r.id !== 'shell' && !activeKinds.has(r.id)).map(r => r.id);
     for (let i = 0; i < want - cur; i++) send({ type: 'add', kind: fresh.shift() || 'claude' });
   } else if (want < cur) {
     [...panes.values()].slice(want).forEach(p => send({ type: 'close', pane: p.id }));
@@ -617,6 +616,18 @@ playbookEl.addEventListener('change', () => {
   promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
 });
 playbookEl.addEventListener('mousedown', () => send({ type: 'playbooks' }));
+
+// ---------- meter sidebar (far right, toggleable, remembered) ----------
+const meterBar = $('meterbar') || document.getElementById('meterbar');
+const meterFrame = document.getElementById('meterframe');
+function setMeter(open) {
+  if (open && !meterFrame.src) meterFrame.src = '/meter'; // lazy-load: no polling while closed
+  meterBar.classList.toggle('open', open);
+  $('meterBtn').classList.toggle('on', open);
+  localStorage.setItem('vibedeck-meterbar', open ? '1' : '0');
+}
+$('meterBtn').addEventListener('click', () => setMeter(!meterBar.classList.contains('open')));
+if (localStorage.getItem('vibedeck-meterbar') === '1') setMeter(true);
 
 // ---------- models refresh ----------
 function repopulateKnobs() {

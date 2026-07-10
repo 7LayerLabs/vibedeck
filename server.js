@@ -30,8 +30,6 @@ const ROSTER = [
   { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
   { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
-  // meter has NO PTY — the client renders an iframe to /meter.html (served below)
-  { id: 'meter',  label: 'METER',  cmd: null },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 // claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
