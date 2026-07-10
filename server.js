@@ -30,6 +30,8 @@ const ROSTER = [
   { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
   { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
+  // no quotes around the path — cmd.exe+ConPTY mangle them into MODULE_NOT_FOUND (path has no spaces)
+  { id: 'meter',  label: 'METER',  cmd: 'node ' + path.join(__dirname, 'meter-cli.js'), ready: /TOKEN METER/ },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 // claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would

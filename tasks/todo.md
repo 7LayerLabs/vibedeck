@@ -1,3 +1,34 @@
+# Project: VibeDeck — Token Meter pane
+
+## Problem Statement
+Derek wants a live token/cost meter (like his VS Code token-meter panels) as a
+pane option, with the ability to pick which CLI meters show.
+
+## What was built
+- `meter-cli.js` — a terminal dashboard that runs in a normal PTY pane (new
+  `meter` ROSTER kind), so zero special-casing in pane management. Refreshes
+  every 10s, reads TODAY's local logs:
+  - claude: ~/.claude/projects/**/*.jsonl per-message usage, per-model cost
+    lines (fable/opus/sonnet/haiku), cache r/w, API-rate $ (0.1x reads,
+    1.25x/2x writes). Incremental byte-offset parsing, so big fleet
+    transcripts aren't re-read each tick.
+  - codex: ~/.codex/sessions rollouts — cumulative tokens + % of plan window
+    (real number from its rate_limits payload); $ estimate.
+  - grok: logs NO token counts — char-based estimate (size/4), labeled.
+- Selection: launch arg (all/claude/codex/claude+grok/…, via a "show ▾"
+  relaunch knob) + live checkbox toggles (press 1/2/3 in the pane).
+- Meter panes default to bcast OFF and are skipped by pane-count auto-grow.
+
+## Review
+- Verified: standalone run against real logs ($71.5 api-rate today, fleet
+  included), 1/2/3 toggles, live pane spawn + render (meter-3).
+- Gotcha: quoting the node script path in the ROSTER cmd broke module
+  resolution through cmd.exe+ConPTY (MODULE_NOT_FOUND) — unquoted works.
+- Pricing table at the top of meter-cli.js (claude real rates from the
+  claude-api skill; codex/grok marked estimates).
+
+---
+
 # Project: VibeDeck — skip-permissions everywhere + ⟳ update models
 
 ## Problem Statement

@@ -178,7 +178,7 @@
 <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
 <script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
 <script>
-const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7' };
+const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7', meter: '#e0af68' };
 // Per-kind dropdowns. Choices live in models.json on the server (⟳ refreshes them).
 // mode 'slash':    types the slash command into the running session (no restart)
 // mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
@@ -196,9 +196,13 @@ const KNOBS = {
     { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾', list: 'efforts' },
   ],
   shell: [],
+  meter: [
+    { mode: 'relaunch', argTemplate: '{v}', placeholder: 'show ▾',
+      choices: ['all', 'claude', 'codex', 'grok', 'claude+codex', 'claude+grok', 'codex+grok'] },
+  ],
 };
 let modelsCfg = {}; // kind -> { models: [], efforts: [] }, from the server
-const choicesFor = (kind, knob) => (modelsCfg[kind] || {})[knob.list] || [];
+const choicesFor = (kind, knob) => knob.choices || (modelsCfg[kind] || {})[knob.list] || [];
 const THEME = { background: '#16181d', foreground: '#d8dee9', cursor: '#7aa2f7', selectionBackground: '#33415580' };
 
 const ws = new WebSocket(`ws://${location.host}`);
@@ -271,7 +275,8 @@ function buildPane(info) {
   });
   term.textarea.addEventListener('blur', () => el.classList.remove('focused'));
 
-  const pane = { term, fit, el, broadcast: true, id: info.id, kind: info.kind, label: info.label, dead: false };
+  // meter panes don't take prompts — broadcast off by default (toggle back if you like)
+  const pane = { term, fit, el, broadcast: info.kind !== 'meter', id: info.id, kind: info.kind, label: info.label, dead: false };
 
   // CLI dropdown: picking a kind replaces this pane with a fresh instance of it
   const cliSel = el.querySelector('.cli');
@@ -369,6 +374,7 @@ function buildPane(info) {
   }
 
   const bcBtn = el.querySelector('.bc');
+  bcBtn.classList.toggle('on', pane.broadcast);
   bcBtn.addEventListener('click', () => {
     pane.broadcast = !pane.broadcast;
     bcBtn.classList.toggle('on', pane.broadcast);
@@ -496,7 +502,7 @@ paneCountEl.addEventListener('change', () => {
   const want = Number(paneCountEl.value), cur = panes.size;
   if (want > cur) {
     const activeKinds = new Set([...panes.values()].map(p => p.kind));
-    const fresh = roster.filter(r => r.id !== 'shell' && !activeKinds.has(r.id)).map(r => r.id);
+    const fresh = roster.filter(r => r.id !== 'shell' && r.id !== 'meter' && !activeKinds.has(r.id)).map(r => r.id);
     for (let i = 0; i < want - cur; i++) send({ type: 'add', kind: fresh.shift() || 'claude' });
   } else if (want < cur) {
     [...panes.values()].slice(want).forEach(p => send({ type: 'close', pane: p.id }));
