@@ -162,15 +162,15 @@ function draw() {
       <div class="card" style="--accent:var(--grok)">
         <div class="head" style="color:var(--grok)"><span class="dot"></span>GROK METER<span class="live">LIVE</span>
           <span class="badge">GROK 4.5</span></div>
-        <div class="big"><span class="cur approx">~</span><span class="num" data-oid="gk#" style="color:var(--text);text-shadow:none"></span></div>
-        <div class="sub">est tokens · ${hms(el)} elapsed · <b>${g.sessions}</b> sessions · <b>${g.messages}</b> msgs</div>
+        <div class="big"><span class="cur">$</span><span class="num" data-oid="gk$"></span></div>
+        <div class="sub"><b>$${(el > 60000 ? g.cost / (el / 36e5) : 0).toFixed(2)}/hr</b> est · ${hms(el)} elapsed · <b>${g.sessions}</b> sessions</div>
         <div class="tiles">
-          ${tile('est tokens', '~' + fmt(g.estTokens))}
-          ${tile('sessions', g.sessions)}
+          ${tile('output tokens', '~' + fmt(g.estOut))}
+          ${tile('input tokens', '~' + fmt(g.estIn))}
           ${tile('messages', g.messages)}
           ${tile('billing', '<small>flat sub</small>')}
         </div>
-        <div class="note">grok logs no token counts — char-based estimate</div>
+        <div class="note">est api-rate — grok logs no token counts, char-based estimate</div>
       </div>`);
   }
   $('#cards').innerHTML = cards.join('');
@@ -179,7 +179,7 @@ function draw() {
     const id = el.dataset.oid;
     if (id === 'cl$') odometer(el, data.claude.cost, money);
     else if (id === 'cx$') odometer(el, data.codex.cost, money);
-    else if (id === 'gk#') odometer(el, data.grok.estTokens, fmt);
+    else if (id === 'gk$') odometer(el, data.grok.cost, money);
     else if (id === 'clo') odometer(el, data.claude.out, fmt);
     else if (id === 'cli') odometer(el, data.claude.in, fmt);
     else if (id === 'cxo') odometer(el, data.codex.out, fmt);

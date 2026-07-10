@@ -13,6 +13,7 @@ const HOME = os.homedir();
 // Codex/grok rates are ESTIMATES — edit freely.
 const CLAUDE_PRICES = { fable: [10, 50], opus: [5, 25], sonnet: [3, 15], haiku: [1, 5] };
 const CODEX_PRICE = { in: 1.25, out: 10, cachedFactor: 0.1 };
+const GROK_PRICE = { in: 3, out: 15 }; // grok-4.5 est
 
 function midnight() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
 
@@ -147,22 +148,25 @@ const grokCache = new Map(); // chat_history path -> { mtimeMs, est, msgs }
 function grokEstimate(fp, st) {
   const hit = grokCache.get(fp);
   if (hit && hit.mtimeMs === st.mtimeMs) return hit;
-  let est = 0, msgs = 0;
+  let estIn = 0, estOut = 0, msgs = 0;
   try {
     for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
       if (!line) continue;
       try {
         const e = JSON.parse(line);
-        if (e.type !== 'user' && e.type !== 'assistant' && e.role !== 'user' && e.role !== 'assistant') continue;
+        const role = e.type === 'user' || e.role === 'user' ? 'user'
+          : e.type === 'assistant' || e.role === 'assistant' ? 'assistant' : null;
+        if (!role) continue;
         const content = e.content ?? e.message?.content ?? '';
         const text = typeof content === 'string' ? content
           : Array.isArray(content) ? content.map(b => b?.text || '').join('') : '';
-        est += Math.round(text.length / 4);
+        const t = Math.round(text.length / 4);
+        if (role === 'user') estIn += t; else estOut += t;
         msgs++;
       } catch {}
     }
   } catch {}
-  const rec = { mtimeMs: st.mtimeMs, est, msgs };
+  const rec = { mtimeMs: st.mtimeMs, estIn, estOut, msgs };
   grokCache.set(fp, rec);
   return rec;
 }
@@ -170,7 +174,7 @@ function grokEstimate(fp, st) {
 function collectGrok() {
   const base = path.join(HOME, '.grok', 'sessions');
   const day = midnight();
-  const out = { estTokens: 0, sessions: 0, messages: 0, firstTs: null, lastTs: null };
+  const out = { estTokens: 0, estIn: 0, estOut: 0, cost: 0, sessions: 0, messages: 0, firstTs: null, lastTs: null };
   let cwds = [];
   try { cwds = fs.readdirSync(base); } catch { return out; }
   for (const cw of cwds) {
@@ -183,10 +187,12 @@ function collectGrok() {
         const fp = path.join(sp, 'chat_history.jsonl');
         const st = fs.statSync(fp);
         if (st.mtimeMs < day) continue;
-        const { est, msgs } = grokEstimate(fp, st);
+        const { estIn, estOut, msgs } = grokEstimate(fp, st);
         if (!msgs) continue; // idle pane spawns with no conversation don't count
         out.sessions++;
-        out.estTokens += est;
+        out.estIn += estIn;
+        out.estOut += estOut;
+        out.estTokens += estIn + estOut;
         out.messages += msgs;
         if (!out.lastTs || st.mtimeMs > out.lastTs) out.lastTs = st.mtimeMs;
         try {
@@ -197,6 +203,7 @@ function collectGrok() {
       } catch {}
     }
   }
+  out.cost = (out.estIn * GROK_PRICE.in + out.estOut * GROK_PRICE.out) / 1e6;
   return out;
 }
 
