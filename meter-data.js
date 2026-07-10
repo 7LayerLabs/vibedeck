@@ -140,6 +140,33 @@ function collectCodex() {
 }
 
 // ---------- grok ----------
+// grok logs no token counts. Estimate from actual user/assistant message
+// content only — the raw files are dominated by the system prompt and JSON
+// envelope, which made a size-based estimate wildly high.
+const grokCache = new Map(); // chat_history path -> { mtimeMs, est, msgs }
+function grokEstimate(fp, st) {
+  const hit = grokCache.get(fp);
+  if (hit && hit.mtimeMs === st.mtimeMs) return hit;
+  let est = 0, msgs = 0;
+  try {
+    for (const line of fs.readFileSync(fp, 'utf8').split('\n')) {
+      if (!line) continue;
+      try {
+        const e = JSON.parse(line);
+        if (e.type !== 'user' && e.type !== 'assistant' && e.role !== 'user' && e.role !== 'assistant') continue;
+        const content = e.content ?? e.message?.content ?? '';
+        const text = typeof content === 'string' ? content
+          : Array.isArray(content) ? content.map(b => b?.text || '').join('') : '';
+        est += Math.round(text.length / 4);
+        msgs++;
+      } catch {}
+    }
+  } catch {}
+  const rec = { mtimeMs: st.mtimeMs, est, msgs };
+  grokCache.set(fp, rec);
+  return rec;
+}
+
 function collectGrok() {
   const base = path.join(HOME, '.grok', 'sessions');
   const day = midnight();
@@ -153,14 +180,17 @@ function collectGrok() {
     for (const s of sessions) {
       const sp = path.join(dp, s);
       try {
-        const st = fs.statSync(path.join(sp, 'chat_history.jsonl'));
+        const fp = path.join(sp, 'chat_history.jsonl');
+        const st = fs.statSync(fp);
         if (st.mtimeMs < day) continue;
+        const { est, msgs } = grokEstimate(fp, st);
+        if (!msgs) continue; // idle pane spawns with no conversation don't count
         out.sessions++;
-        out.estTokens += Math.round(st.size / 4);
+        out.estTokens += est;
+        out.messages += msgs;
         if (!out.lastTs || st.mtimeMs > out.lastTs) out.lastTs = st.mtimeMs;
         try {
           const sum = JSON.parse(fs.readFileSync(path.join(sp, 'summary.json'), 'utf8'));
-          out.messages += sum.num_chat_messages || 0;
           const created = Math.max(Date.parse(sum.created_at) || 0, day);
           if (created && (!out.firstTs || created < out.firstTs)) out.firstTs = created;
         } catch {}
