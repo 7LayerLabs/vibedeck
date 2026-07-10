@@ -23,11 +23,11 @@ const claudeMsgs = new Map();  // message id -> { model, usage }
 let claudeTs = { min: Infinity, max: 0 };
 let claudeDay = midnight();
 
-function collectClaude() {
+function collectClaude(opts) {
   if (midnight() !== claudeDay) { claudeDay = midnight(); claudeFiles.clear(); claudeMsgs.clear(); claudeTs = { min: Infinity, max: 0 }; }
   const projDir = path.join(HOME, '.claude', 'projects');
   let dirs = [];
-  try { dirs = fs.readdirSync(projDir); } catch { return summarizeClaude(); }
+  try { dirs = fs.readdirSync(projDir); } catch { return claudeResult(opts); }
   for (const d of dirs) {
     let files = [];
     const dp = path.join(projDir, d);
@@ -38,7 +38,7 @@ function collectClaude() {
       try { st = fs.statSync(fp); } catch { continue; }
       if (st.mtimeMs < claudeDay) continue;
       let rec = claudeFiles.get(fp);
-      if (!rec) { rec = { offset: 0, leftover: '' }; claudeFiles.set(fp, rec); }
+      if (!rec) { rec = { offset: 0, leftover: '', birth: st.birthtimeMs || st.mtimeMs }; claudeFiles.set(fp, rec); }
       if (st.size <= rec.offset) continue;
       let fd;
       try {
@@ -61,18 +61,37 @@ function collectClaude() {
             const ts = e.timestamp ? Date.parse(e.timestamp) : 0;
             if (ts && ts < claudeDay) continue;
             if (ts) { claudeTs.min = Math.min(claudeTs.min, ts); claudeTs.max = Math.max(claudeTs.max, ts); }
-            claudeMsgs.set(m.id, { model: m.model || '?', usage: m.usage });
+            claudeMsgs.set(m.id, { model: m.model || '?', usage: m.usage, ts, fp, birth: rec.birth });
           } catch {}
         }
       } catch { try { if (fd !== undefined) fs.closeSync(fd); } catch {} }
     }
   }
-  return summarizeClaude();
+  return claudeResult(opts);
 }
 
-function summarizeClaude() {
+function claudeResult(opts) {
+  const daily = summarizeClaude(() => true);
+  // session slice: transcripts CREATED since the pane spawned, in this deck's
+  // project dir — excludes fleet agents (other dirs) and pre-existing claude
+  // sessions like Claude Code conversations already running in this dir
+  const since = opts?.since?.claude;
+  let session = null;
+  if (since) {
+    const projKey = String(opts.cwd || HOME).replace(/[^a-zA-Z0-9]/g, '-');
+    const projPath = path.join(HOME, '.claude', 'projects', projKey) + path.sep;
+    session = summarizeClaude(m => m.birth >= since - 5000 && m.fp.startsWith(projPath));
+  }
+  return { daily, session };
+}
+
+function summarizeClaude(filter) {
   const byModel = {};
-  for (const { model, usage } of claudeMsgs.values()) {
+  let tsMin = Infinity, tsMax = 0;
+  for (const m of claudeMsgs.values()) {
+    if (!filter(m)) continue;
+    if (m.ts) { tsMin = Math.min(tsMin, m.ts); tsMax = Math.max(tsMax, m.ts); }
+    const { model, usage } = m;
     const fam = ['fable', 'opus', 'sonnet', 'haiku'].find(k => model.includes(k)) || 'opus';
     const t = byModel[fam] || (byModel[fam] = { in: 0, out: 0, cr: 0, cw5: 0, cw1: 0, calls: 0 });
     t.in += usage.input_tokens || 0;
@@ -86,7 +105,7 @@ function summarizeClaude() {
     t.calls++;
   }
   const out = { in: 0, out: 0, cacheRead: 0, cacheWrite: 0, calls: 0, cost: 0, models: [],
-                firstTs: claudeTs.min === Infinity ? null : claudeTs.min, lastTs: claudeTs.max || null };
+                firstTs: tsMin === Infinity ? null : tsMin, lastTs: tsMax || null };
   for (const [fam, t] of Object.entries(byModel)) {
     const [pin, pout] = CLAUDE_PRICES[fam];
     const cost = (t.in * pin + t.out * pout + t.cr * pin * 0.1 + t.cw5 * pin * 1.25 + t.cw1 * pin * 2) / 1e6;
@@ -99,22 +118,27 @@ function summarizeClaude() {
 }
 
 // ---------- codex ----------
-function collectCodex() {
+function codexCost(t) {
+  return ((t.in - t.cached) * CODEX_PRICE.in + t.cached * CODEX_PRICE.in * CODEX_PRICE.cachedFactor
+    + t.out * CODEX_PRICE.out) / 1e6;
+}
+function collectCodex(opts) {
   const d = new Date();
   const dir = path.join(HOME, '.codex', 'sessions',
     String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'));
   let files = [];
   try { files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl')); } catch {}
-  const out = { in: 0, cached: 0, out: 0, sessions: 0, planPct: null, planWindowDays: null, firstTs: null, lastTs: null };
+  const since = opts?.since?.codex;
+  const zero = () => ({ in: 0, cached: 0, out: 0, sessions: 0, planPct: null, planWindowDays: null, firstTs: null, lastTs: null });
+  const daily = zero();
+  const session = since ? zero() : null;
   let latest = 0;
   for (const f of files) {
     try {
       const text = fs.readFileSync(path.join(dir, f), 'utf8');
+      let fileStart = null;
       const first = text.slice(0, 500).match(/"timestamp":"([^"]+)"/);
-      if (first) {
-        const t = Date.parse(first[1]);
-        if (t && (!out.firstTs || t < out.firstTs)) out.firstTs = t;
-      }
+      if (first) fileStart = Date.parse(first[1]) || null;
       const idx = text.lastIndexOf('"token_count"');
       if (idx === -1) continue;
       const lineStart = text.lastIndexOf('\n', idx) + 1;
@@ -122,22 +146,27 @@ function collectCodex() {
       const e = JSON.parse(text.slice(lineStart, lineEnd === -1 ? undefined : lineEnd));
       const u = e.payload?.info?.total_token_usage;
       if (!u) continue;
-      out.in += u.input_tokens || 0;
-      out.cached += u.cached_input_tokens || 0;
-      out.out += u.output_tokens || 0;
-      out.sessions++;
+      const buckets = [daily];
+      if (session && fileStart && fileStart >= since) buckets.push(session); // session = rollouts started after the pane spawned
+      for (const b of buckets) {
+        b.in += u.input_tokens || 0;
+        b.cached += u.cached_input_tokens || 0;
+        b.out += u.output_tokens || 0;
+        b.sessions++;
+        if (fileStart && (!b.firstTs || fileStart < b.firstTs)) b.firstTs = fileStart;
+      }
       const ts = Date.parse(e.timestamp) || 0;
       if (ts > latest) {
         latest = ts;
-        out.lastTs = ts;
+        daily.lastTs = ts;
         const rl = e.payload?.rate_limits?.secondary;
-        if (rl) { out.planPct = rl.used_percent; out.planWindowDays = Math.round((rl.window_minutes || 0) / 1440); }
+        if (rl) { daily.planPct = rl.used_percent; daily.planWindowDays = Math.round((rl.window_minutes || 0) / 1440); }
       }
     } catch {}
   }
-  out.cost = ((out.in - out.cached) * CODEX_PRICE.in + out.cached * CODEX_PRICE.in * CODEX_PRICE.cachedFactor
-    + out.out * CODEX_PRICE.out) / 1e6;
-  return out;
+  daily.cost = codexCost(daily);
+  if (session) { session.cost = codexCost(session); session.planPct = daily.planPct; session.planWindowDays = daily.planWindowDays; }
+  return { daily, session };
 }
 
 // ---------- grok ----------
@@ -171,12 +200,15 @@ function grokEstimate(fp, st) {
   return rec;
 }
 
-function collectGrok() {
+function collectGrok(opts) {
   const base = path.join(HOME, '.grok', 'sessions');
   const day = midnight();
-  const out = { estTokens: 0, estIn: 0, estOut: 0, cost: 0, sessions: 0, messages: 0, firstTs: null, lastTs: null };
+  const since = opts?.since?.grok;
+  const zero = () => ({ estTokens: 0, estIn: 0, estOut: 0, cost: 0, sessions: 0, messages: 0, firstTs: null, lastTs: null });
+  const daily = zero();
+  const session = since ? zero() : null;
   let cwds = [];
-  try { cwds = fs.readdirSync(base); } catch { return out; }
+  try { cwds = fs.readdirSync(base); } catch { return { daily, session }; }
   for (const cw of cwds) {
     const dp = path.join(base, cw);
     let sessions = [];
@@ -189,26 +221,33 @@ function collectGrok() {
         if (st.mtimeMs < day) continue;
         const { estIn, estOut, msgs } = grokEstimate(fp, st);
         if (!msgs) continue; // idle pane spawns with no conversation don't count
-        out.sessions++;
-        out.estIn += estIn;
-        out.estOut += estOut;
-        out.estTokens += estIn + estOut;
-        out.messages += msgs;
-        if (!out.lastTs || st.mtimeMs > out.lastTs) out.lastTs = st.mtimeMs;
+        let created = 0;
         try {
           const sum = JSON.parse(fs.readFileSync(path.join(sp, 'summary.json'), 'utf8'));
-          const created = Math.max(Date.parse(sum.created_at) || 0, day);
-          if (created && (!out.firstTs || created < out.firstTs)) out.firstTs = created;
+          created = Date.parse(sum.created_at) || 0;
         } catch {}
+        const buckets = [daily];
+        if (session && created >= since) buckets.push(session); // session = grok sessions started after the pane spawned
+        for (const b of buckets) {
+          b.sessions++;
+          b.estIn += estIn;
+          b.estOut += estOut;
+          b.estTokens += estIn + estOut;
+          b.messages += msgs;
+          if (!b.lastTs || st.mtimeMs > b.lastTs) b.lastTs = st.mtimeMs;
+          const c = Math.max(created, day);
+          if (c && (!b.firstTs || c < b.firstTs)) b.firstTs = c;
+        }
       } catch {}
     }
   }
-  out.cost = (out.estIn * GROK_PRICE.in + out.estOut * GROK_PRICE.out) / 1e6;
-  return out;
+  for (const b of [daily, session]) if (b) b.cost = (b.estIn * GROK_PRICE.in + b.estOut * GROK_PRICE.out) / 1e6;
+  return { daily, session };
 }
 
 module.exports = {
-  collect() {
-    return { ts: Date.now(), claude: collectClaude(), codex: collectCodex(), grok: collectGrok() };
+  collect(opts) {
+    return { ts: Date.now(), since: opts?.since || {},
+             claude: collectClaude(opts), codex: collectCodex(opts), grok: collectGrok(opts) };
   },
 };

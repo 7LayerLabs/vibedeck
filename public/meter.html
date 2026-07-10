@@ -56,6 +56,8 @@
   .foot .m { color: var(--text); }
   .foot .money { color: var(--gold); font-weight: 600; }
   .note { font-size: 9px; color: var(--faint); margin-top: 6px; }
+  .daily { font-size: 11px; color: var(--dim); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .daily .money { color: var(--gold); font-weight: 700; }
   .planbar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 8px; overflow: hidden; }
   .planbar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width .6s ease; }
 </style>
@@ -114,76 +116,82 @@ function draw() {
   if (!data) return;
   const now = Date.now();
   const cards = [];
+  const Z = { in: 0, out: 0, cacheRead: 0, cacheWrite: 0, cached: 0, estIn: 0, estOut: 0, estTokens: 0,
+              calls: 0, sessions: 0, messages: 0, cost: 0, models: [], planPct: null };
   if (picks.includes('claude')) {
-    const c = data.claude;
-    const el = c.firstTs ? now - c.firstTs : 0;
-    const rate = el > 60000 ? c.cost / (el / 36e5) : 0;
+    const s = data.claude.session || Z, day = data.claude.daily;
+    const el = data.since.claude ? now - data.since.claude : 0;
+    const rate = el > 60000 ? s.cost / (el / 36e5) : 0;
     cards.push(`
       <div class="card" style="--accent:var(--claude)">
         <div class="head" style="color:var(--claude)"><span class="dot"></span>CLAUDE METER<span class="live">LIVE</span>
-          <span class="badge">${(c.models[0]?.name || 'claude').toUpperCase()}</span></div>
+          <span class="badge">${((s.models[0] || day.models[0])?.name || 'claude').toUpperCase()}</span></div>
         <div class="big"><span class="cur">$</span><span class="num" data-oid="cl$"></span></div>
-        <div class="sub"><b>$${rate.toFixed(2)}/hr</b> · ${hms(el)} elapsed · <b>${c.calls}</b> calls</div>
+        <div class="sub">this session · <b>$${rate.toFixed(2)}/hr</b> · ${hms(el)} · <b>${s.calls}</b> calls</div>
         <div class="tiles">
           ${tile('output tokens', `<span data-oid="clo"></span>`)}
           ${tile('input tokens', `<span data-oid="cli"></span>`)}
-          ${tile('cache read', fmt(c.cacheRead))}
-          ${tile('cache write', fmt(c.cacheWrite))}
+          ${tile('cache read', fmt(s.cacheRead))}
+          ${tile('cache write', fmt(s.cacheWrite))}
         </div>
-        <div class="foot">${c.models.map(m =>
-          `<span class="m">${m.name}</span> <span class="money">$${money(m.cost)}</span> <small>(${m.calls})</small>`).join(' · ') || 'no usage today'}</div>
-        <div class="note">api-rate value — Max plan is flat, not billed per token</div>
+        <div class="foot">${s.models.map(m =>
+          `<span class="m">${m.name}</span> <span class="money">$${money(m.cost)}</span> <small>(${m.calls})</small>`).join(' · ') || (data.since.claude ? 'nothing this session yet' : 'no claude pane running')}</div>
+        <div class="daily">today total <span class="money">$${money(day.cost)}</span> · ${day.calls} calls <small>(fleet incl.)</small></div>
+        <div class="note">api-rate value — Max plan is flat, not billed per token · session resets on pane restart</div>
       </div>`);
   }
   if (picks.includes('codex')) {
-    const c = data.codex;
-    const el = c.firstTs ? now - c.firstTs : 0;
-    const rate = el > 60000 ? c.cost / (el / 36e5) : 0;
+    const s = data.codex.session || Z, day = data.codex.daily;
+    const el = data.since.codex ? now - data.since.codex : 0;
+    const rate = el > 60000 ? s.cost / (el / 36e5) : 0;
     cards.push(`
       <div class="card" style="--accent:var(--codex)">
         <div class="head" style="color:var(--codex)"><span class="dot"></span>CODEX METER<span class="live">LIVE</span>
           <span class="badge">GPT-5.X</span></div>
         <div class="big"><span class="cur">$</span><span class="num" data-oid="cx$"></span></div>
-        <div class="sub"><b>$${rate.toFixed(2)}/hr</b> est · ${hms(el)} elapsed · <b>${c.sessions}</b> sessions</div>
+        <div class="sub">this session · <b>$${rate.toFixed(2)}/hr</b> est · ${hms(el)}</div>
         <div class="tiles">
           ${tile('output tokens', `<span data-oid="cxo"></span>`)}
           ${tile('input tokens', `<span data-oid="cxi"></span>`)}
-          ${tile('cached input', fmt(c.cached))}
-          ${tile('plan used', c.planPct != null ? `${c.planPct}% <small>of ${c.planWindowDays}d</small>` : '—')}
+          ${tile('cached input', fmt(s.cached))}
+          ${tile('plan used', day.planPct != null ? `${day.planPct}% <small>of ${day.planWindowDays}d</small>` : '—')}
         </div>
-        ${c.planPct != null ? `<div class="planbar"><i style="width:${Math.min(100, c.planPct)}%"></i></div>` : ''}
-        <div class="note">est api-rate — codex prices are estimates (meter-data.js)</div>
+        ${day.planPct != null ? `<div class="planbar"><i style="width:${Math.min(100, day.planPct)}%"></i></div>` : ''}
+        <div class="daily">today total <span class="money">$${money(day.cost)}</span> · ${day.sessions} sessions</div>
+        <div class="note">est api-rate — codex prices are estimates · session resets on pane restart</div>
       </div>`);
   }
   if (picks.includes('grok')) {
-    const g = data.grok;
-    const el = g.firstTs ? now - g.firstTs : 0;
+    const s = data.grok.session || Z, day = data.grok.daily;
+    const el = data.since.grok ? now - data.since.grok : 0;
     cards.push(`
       <div class="card" style="--accent:var(--grok)">
         <div class="head" style="color:var(--grok)"><span class="dot"></span>GROK METER<span class="live">LIVE</span>
           <span class="badge">GROK 4.5</span></div>
         <div class="big"><span class="cur">$</span><span class="num" data-oid="gk$"></span></div>
-        <div class="sub"><b>$${(el > 60000 ? g.cost / (el / 36e5) : 0).toFixed(2)}/hr</b> est · ${hms(el)} elapsed · <b>${g.sessions}</b> sessions</div>
+        <div class="sub">this session · <b>$${(el > 60000 ? s.cost / (el / 36e5) : 0).toFixed(2)}/hr</b> est · ${hms(el)}</div>
         <div class="tiles">
-          ${tile('output tokens', '~' + fmt(g.estOut))}
-          ${tile('input tokens', '~' + fmt(g.estIn))}
-          ${tile('messages', g.messages)}
+          ${tile('output tokens', '~' + fmt(s.estOut))}
+          ${tile('input tokens', '~' + fmt(s.estIn))}
+          ${tile('messages', s.messages)}
           ${tile('billing', '<small>flat sub</small>')}
         </div>
-        <div class="note">est api-rate — grok logs no token counts, char-based estimate</div>
+        <div class="daily">today total <span class="money">$${money(day.cost)}</span> · ${day.messages} msgs</div>
+        <div class="note">est api-rate — grok logs no token counts, char-based estimate · session resets on pane restart</div>
       </div>`);
   }
   $('#cards').innerHTML = cards.join('');
   // animate the headline numbers
+  const cl = data.claude.session || Z, cx = data.codex.session || Z, gk = data.grok.session || Z;
   document.querySelectorAll('[data-oid]').forEach(el => {
     const id = el.dataset.oid;
-    if (id === 'cl$') odometer(el, data.claude.cost, money);
-    else if (id === 'cx$') odometer(el, data.codex.cost, money);
-    else if (id === 'gk$') odometer(el, data.grok.cost, money);
-    else if (id === 'clo') odometer(el, data.claude.out, fmt);
-    else if (id === 'cli') odometer(el, data.claude.in, fmt);
-    else if (id === 'cxo') odometer(el, data.codex.out, fmt);
-    else if (id === 'cxi') odometer(el, data.codex.in, fmt);
+    if (id === 'cl$') odometer(el, cl.cost, money);
+    else if (id === 'cx$') odometer(el, cx.cost, money);
+    else if (id === 'gk$') odometer(el, gk.cost, money);
+    else if (id === 'clo') odometer(el, cl.out, fmt);
+    else if (id === 'cli') odometer(el, cl.in, fmt);
+    else if (id === 'cxo') odometer(el, cx.out, fmt);
+    else if (id === 'cxi') odometer(el, cx.in, fmt);
   });
 }
 

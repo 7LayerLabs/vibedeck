@@ -124,7 +124,14 @@ app.use('/vendor/addon-webgl', express.static(path.join(__dirname, 'node_modules
 
 const meterData = require('./meter-data');
 app.get('/api/meter', (req, res) => {
-  try { res.json(meterData.collect()); } catch (e) { res.status(500).json({ error: e.message }); }
+  // session slice starts at the earliest spawn among this kind's live panes —
+  // restarting a pane moves it forward, resetting the session meter to zero
+  const since = {};
+  for (const s of sessions.values()) {
+    if (!s.alive || !s.spawnTs) continue;
+    if (['claude', 'codex', 'grok'].includes(s.kind)) since[s.kind] = Math.min(since[s.kind] ?? Infinity, s.spawnTs);
+  }
+  try { res.json(meterData.collect({ cwd: state.cwd, since })); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/meter', (req, res) => res.sendFile(path.join(__dirname, 'public', 'meter.html')));
 
@@ -169,7 +176,7 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
     return id;
   }
   const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false,
-                    lastDataTs: Date.now(), queue: [] };
+                    lastDataTs: Date.now(), spawnTs: Date.now(), queue: [] };
   sessions.set(id, session);
 
   // guard against stale events: after a restart/replace, the killed process's
