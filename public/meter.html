@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Token Meter</title>
+<style>
+  :root {
+    --bg: #101216; --card: #16181d; --border: #2a2e38; --tile: #1a1d24;
+    --text: #e6e9f0; --dim: #6b7280; --faint: #4b5563;
+    --gold: #e8b45a; --claude: #d97757; --codex: #10a37f; --grok: #b9bfc9;
+    --ok: #9ece6a; --bad: #ef4444;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    font-variant-numeric: tabular-nums; overflow-y: auto; padding: 10px 12px 16px;
+  }
+  #picks { display: flex; gap: 14px; align-items: center; margin: 2px 2px 10px; font-size: 11px; color: var(--dim); }
+  #picks label { display: flex; gap: 6px; align-items: center; cursor: pointer; letter-spacing: .5px; }
+  #picks input { accent-color: var(--gold); width: 13px; height: 13px; cursor: pointer; }
+  #picks .cl { color: var(--claude); } #picks .cx { color: var(--codex); } #picks .gk { color: var(--grok); }
+  #picks .when { margin-left: auto; color: var(--faint); font-size: 10px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px 12px; margin-bottom: 12px; position: relative; overflow: hidden;
+  }
+  .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: var(--accent); opacity: .8; }
+  .head { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 1.5px; font-weight: 700; }
+  .head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .head .live { color: var(--dim); font-weight: 400; letter-spacing: 1px; }
+  .head .live::before { content: "· "; }
+  .badge {
+    margin-left: auto; font-size: 10px; letter-spacing: 1px; font-weight: 700;
+    background: var(--accent); color: #14161b; border-radius: 4px; padding: 2px 8px;
+  }
+  .big { display: flex; align-items: baseline; gap: 4px; margin: 10px 0 2px; }
+  .big .cur { font-size: 20px; color: var(--dim); font-weight: 600; }
+  .big .num { font-size: 44px; font-weight: 800; color: var(--gold); line-height: 1; letter-spacing: -1px;
+              text-shadow: 0 0 24px color-mix(in srgb, var(--gold) 30%, transparent); }
+  .big .approx { color: var(--grok); }
+  .sub { font-size: 11px; color: var(--dim); margin-bottom: 12px; }
+  .sub b { color: var(--text); font-weight: 600; }
+
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tile { background: var(--tile); padding: 8px 12px; }
+  .tile:nth-child(odd) { border-right: 1px solid var(--border); }
+  .tile:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .tile .lb { font-size: 9px; letter-spacing: 1.2px; color: var(--dim); text-transform: uppercase; }
+  .tile .vl { font-size: 19px; font-weight: 700; margin-top: 2px; }
+  .tile .vl small { font-size: 12px; color: var(--dim); font-weight: 400; }
+
+  .foot { font-size: 10px; color: var(--dim); margin-top: 10px; line-height: 1.7; }
+  .foot .m { color: var(--text); }
+  .foot .money { color: var(--gold); font-weight: 600; }
+  .note { font-size: 9px; color: var(--faint); margin-top: 6px; }
+  .planbar { height: 4px; border-radius: 2px; background: var(--border); margin-top: 8px; overflow: hidden; }
+  .planbar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width .6s ease; }
+</style>
+</head>
+<body>
+<div id="picks">
+  <label class="cl"><input type="checkbox" data-k="claude" checked> CLAUDE</label>
+  <label class="cx"><input type="checkbox" data-k="codex" checked> CODEX</label>
+  <label class="gk"><input type="checkbox" data-k="grok" checked> GROK</label>
+  <span class="when">today · api-rate value</span>
+</div>
+<div id="cards"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M'
+             : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'k' : String(Math.round(n || 0));
+const money = n => (n >= 100 ? n.toFixed(1) : (n || 0).toFixed(2));
+function hms(ms) {
+  if (!ms || ms < 0) return '0:00:00';
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// checkbox state persists; ?show=claude+codex overrides on load
+const KEY = 'vibedeck-meter-picks';
+const qs = new URLSearchParams(location.search).get('show');
+let picks = qs ? qs.split(/[+,]/) : JSON.parse(localStorage.getItem(KEY) || '["claude","codex","grok"]');
+document.querySelectorAll('#picks input').forEach(cb => {
+  cb.checked = picks.includes(cb.dataset.k);
+  cb.addEventListener('change', () => {
+    picks = [...document.querySelectorAll('#picks input:checked')].map(c => c.dataset.k);
+    if (!picks.length) { cb.checked = true; picks = [cb.dataset.k]; }
+    localStorage.setItem(KEY, JSON.stringify(picks));
+    draw();
+  });
+});
+
+// odometer: tween displayed numbers toward their target
+const tweens = new Map();
+function odometer(el, target, format) {
+  const from = tweens.get(el.dataset.oid) ?? target;
+  tweens.set(el.dataset.oid, target);
+  const t0 = performance.now(), dur = 700;
+  (function step(t) {
+    const p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+    el.textContent = format(from + (target - from) * e);
+    if (p < 1) requestAnimationFrame(step);
+  })(t0);
+}
+
+let data = null;
+function tile(lb, vl) { return `<div class="tile"><div class="lb">${lb}</div><div class="vl">${vl}</div></div>`; }
+
+function draw() {
+  if (!data) return;
+  const now = Date.now();
+  const cards = [];
+  if (picks.includes('claude')) {
+    const c = data.claude;
+    const el = c.firstTs ? now - c.firstTs : 0;
+    const rate = el > 60000 ? c.cost / (el / 36e5) : 0;
+    cards.push(`
+      <div class="card" style="--accent:var(--claude)">
+        <div class="head" style="color:var(--claude)"><span class="dot"></span>CLAUDE METER<span class="live">LIVE</span>
+          <span class="badge">${(c.models[0]?.name || 'claude').toUpperCase()}</span></div>
+        <div class="big"><span class="cur">$</span><span class="num" data-oid="cl$"></span></div>
+        <div class="sub"><b>$${rate.toFixed(2)}/hr</b> · ${hms(el)} elapsed · <b>${c.calls}</b> calls</div>
+        <div class="tiles">
+          ${tile('output tokens', `<span data-oid="clo"></span>`)}
+          ${tile('input tokens', `<span data-oid="cli"></span>`)}
+          ${tile('cache read', fmt(c.cacheRead))}
+          ${tile('cache write', fmt(c.cacheWrite))}
+        </div>
+        <div class="foot">${c.models.map(m =>
+          `<span class="m">${m.name}</span> <span class="money">$${money(m.cost)}</span> <small>(${m.calls})</small>`).join(' · ') || 'no usage today'}</div>
+        <div class="note">api-rate value — Max plan is flat, not billed per token</div>
+      </div>`);
+  }
+  if (picks.includes('codex')) {
+    const c = data.codex;
+    const el = c.firstTs ? now - c.firstTs : 0;
+    const rate = el > 60000 ? c.cost / (el / 36e5) : 0;
+    cards.push(`
+      <div class="card" style="--accent:var(--codex)">
+        <div class="head" style="color:var(--codex)"><span class="dot"></span>CODEX METER<span class="live">LIVE</span>
+          <span class="badge">GPT-5.X</span></div>
+        <div class="big"><span class="cur">$</span><span class="num" data-oid="cx$"></span></div>
+        <div class="sub"><b>$${rate.toFixed(2)}/hr</b> est · ${hms(el)} elapsed · <b>${c.sessions}</b> sessions</div>
+        <div class="tiles">
+          ${tile('output tokens', `<span data-oid="cxo"></span>`)}
+          ${tile('input tokens', `<span data-oid="cxi"></span>`)}
+          ${tile('cached input', fmt(c.cached))}
+          ${tile('plan used', c.planPct != null ? `${c.planPct}% <small>of ${c.planWindowDays}d</small>` : '—')}
+        </div>
+        ${c.planPct != null ? `<div class="planbar"><i style="width:${Math.min(100, c.planPct)}%"></i></div>` : ''}
+        <div class="note">est api-rate — codex prices are estimates (meter-data.js)</div>
+      </div>`);
+  }
+  if (picks.includes('grok')) {
+    const g = data.grok;
+    const el = g.firstTs ? now - g.firstTs : 0;
+    cards.push(`
+      <div class="card" style="--accent:var(--grok)">
+        <div class="head" style="color:var(--grok)"><span class="dot"></span>GROK METER<span class="live">LIVE</span>
+          <span class="badge">GROK 4.5</span></div>
+        <div class="big"><span class="cur approx">~</span><span class="num" data-oid="gk#" style="color:var(--text);text-shadow:none"></span></div>
+        <div class="sub">est tokens · ${hms(el)} elapsed · <b>${g.sessions}</b> sessions · <b>${g.messages}</b> msgs</div>
+        <div class="tiles">
+          ${tile('est tokens', '~' + fmt(g.estTokens))}
+          ${tile('sessions', g.sessions)}
+          ${tile('messages', g.messages)}
+          ${tile('billing', '<small>flat sub</small>')}
+        </div>
+        <div class="note">grok logs no token counts — char-based estimate</div>
+      </div>`);
+  }
+  $('#cards').innerHTML = cards.join('');
+  // animate the headline numbers
+  document.querySelectorAll('[data-oid]').forEach(el => {
+    const id = el.dataset.oid;
+    if (id === 'cl$') odometer(el, data.claude.cost, money);
+    else if (id === 'cx$') odometer(el, data.codex.cost, money);
+    else if (id === 'gk#') odometer(el, data.grok.estTokens, fmt);
+    else if (id === 'clo') odometer(el, data.claude.out, fmt);
+    else if (id === 'cli') odometer(el, data.claude.in, fmt);
+    else if (id === 'cxo') odometer(el, data.codex.out, fmt);
+    else if (id === 'cxi') odometer(el, data.codex.in, fmt);
+  });
+}
+
+async function tick() {
+  try {
+    data = await (await fetch('/api/meter')).json();
+    draw();
+  } catch {}
+}
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

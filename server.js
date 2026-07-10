@@ -30,8 +30,8 @@ const ROSTER = [
   { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
   { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
-  // no quotes around the path — cmd.exe+ConPTY mangle them into MODULE_NOT_FOUND (path has no spaces)
-  { id: 'meter',  label: 'METER',  cmd: 'node ' + path.join(__dirname, 'meter-cli.js'), ready: /TOKEN METER/ },
+  // meter has NO PTY — the client renders an iframe to /meter.html (served below)
+  { id: 'meter',  label: 'METER',  cmd: null },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 // claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
@@ -124,6 +124,12 @@ app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules', '@x
 app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-fit')));
 app.use('/vendor/addon-webgl', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-webgl')));
 
+const meterData = require('./meter-data');
+app.get('/api/meter', (req, res) => {
+  try { res.json(meterData.collect()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/meter', (req, res) => res.sendFile(path.join(__dirname, 'public', 'meter.html')));
+
 const server = app.listen(PORT, () => slog(`VibeDeck on http://localhost:${PORT}`));
 const wss = new WebSocketServer({ server });
 
@@ -139,6 +145,11 @@ function broadcastWs(msg) {
 function spawnPane(kindId, instanceId, extraArgs, yolo) {
   const entry = kindOf(kindId);
   const id = instanceId || `${kindId}-${++instanceSeq}`;
+  if (!entry.cmd) { // PTY-less pane (meter): client renders it as an iframe
+    sessions.set(id, { kind: kindId, proc: null, alive: true, buffer: '', extraArgs: '', yolo: false,
+                       roundOut: '', inRound: false, lastDataTs: 0, queue: [] });
+    return id;
+  }
   yolo = yolo !== false; // skip-permissions on unless the pane's toggle turned it off
   const cmd = entry.cmd + (entry.flags && yolo ? ' ' + entry.flags : '') + (extraArgs ? ' ' + extraArgs : '');
   slog(`spawn ${id}: ${cmd}`);
@@ -510,9 +521,9 @@ wss.on('connection', (ws) => {
   function handleMessage(msg, ws) {
     const s = sessions.get(msg.pane);
 
-    if (msg.type === 'input' && s && s.alive) {
+    if (msg.type === 'input' && s && s.alive && s.proc) {
       s.proc.write(msg.data);
-    } else if (msg.type === 'image' && s && s.alive) {
+    } else if (msg.type === 'image' && s && s.alive && s.proc) {
       // pasted/dropped image: save to disk, type the path into the CLI's input
       // (a PTY can't take pixels — the CLIs all read image paths from prompts)
       const m = /^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)$/.exec(String(msg.data || ''));
@@ -527,7 +538,7 @@ wss.on('connection', (ws) => {
       s.proc.write(file + ' ');
       broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
-      const targets = msg.targets.filter(id => sessions.get(id)?.alive);
+      const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
       lastRound = { ts: Date.now(), prompt: msg.data, targets };
       try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: lastRound.ts, text: msg.data }) + '\n'); } catch {}
       for (const id of targets) {
@@ -540,7 +551,7 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'roundStarted', ts: lastRound.ts, targets });
     } else if (msg.type === 'relay' && s) {
       const to = sessions.get(msg.to);
-      if (!to || !to.alive) return;
+      if (!to || !to.alive || !to.proc) return;
       const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024)).slice(-12 * 1024);
       if (!src) return;
       const fromLabel = kindOf(s.kind).label;
@@ -589,7 +600,7 @@ wss.on('connection', (ws) => {
       }
       saveState();
       broadcastWs({ type: 'cwdChanged', cwd: state.cwd, recents: state.recents });
-    } else if (msg.type === 'resize' && s && s.alive) {
+    } else if (msg.type === 'resize' && s && s.alive && s.proc) {
       const cols = Math.max(2, msg.cols | 0), rows = Math.max(2, msg.rows | 0);
       try { s.proc.resize(cols, rows); } catch {}
     } else if (msg.type === 'restart' && s) {
