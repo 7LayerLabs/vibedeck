@@ -274,7 +274,7 @@ function readPlaybooks() {
 const MODELS_FILE = path.join(__dirname, 'models.json');
 let modelsCfg = {
   claude: { models: ['fable', 'opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  codex:  { models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
+  codex:  { models: ['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
   grok:   { models: ['grok-4.5', 'grok-composer-2.5-fast'], efforts: ['low', 'medium', 'high'] },
 };
 try { modelsCfg = { ...modelsCfg, ...JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) }; } catch {}
@@ -500,7 +500,7 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
     panes: [...sessions.keys()].map(paneInfo),
-    roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: !!r.flags })),
+    roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: !!r.flags, flags: r.flags || '' })),
     maxPanes: MAX_PANES,
     cwd: state.cwd,
     recents: state.recents,

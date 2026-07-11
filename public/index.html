@@ -303,8 +303,8 @@
         <svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/></svg>compare</button>
       <button id="histBtn" class="tbtn" title="prompt history">
         <svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>history</button>
-      <button id="modelsBtn" class="tbtn icon-only" title="refresh model lists from the CLIs">
-        <svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg></button>
+      <button id="modelsBtn" class="tbtn" title="pull the latest model lists from the CLIs, then switch every pane to the newest model (codex/grok panes relaunch)">
+        <svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>update models</button>
       <button id="helpBtn" class="tbtn icon-only" title="keyboard shortcuts">
         <svg class="i" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg></button>
     </div>
@@ -579,6 +579,7 @@ function buildPane(info) {
   pane.yolo = info.yolo !== false;
   const rosterEntry = roster.find(r => r.id === info.kind);
   if (rosterEntry && rosterEntry.hasYolo) {
+    yoloBtn.title = `skip permissions — relaunches this CLI with ${rosterEntry.flags}`;
     yoloBtn.classList.toggle('on', pane.yolo);
     yoloBtn.addEventListener('click', () => send({ type: 'yolo', pane: info.id, on: !pane.yolo }));
   } else {
@@ -803,6 +804,7 @@ ws.onmessage = (ev) => {
     modelsCfg = msg.config || {};
     repopulateKnobs();
     toast(`models: ${msg.report}`);
+    if (applyLatestPending) { applyLatestPending = false; applyLatestModels(); }
   } else if (msg.type === 'cwdChanged') {
     setCwd(msg.cwd, msg.recents || recents);
     $('cwdPanel').classList.remove('open');
@@ -904,7 +906,26 @@ function repopulateKnobs() {
     if (choices.includes(cur)) sel.value = cur;
   }));
 }
-$('modelsBtn').addEventListener('click', () => send({ type: 'updateModels' }));
+// update models = refresh the lists from the CLIs, then jump every pane to the
+// newest model in its list (claude via /model in-session; codex/grok relaunch)
+let applyLatestPending = false;
+$('modelsBtn').addEventListener('click', () => {
+  applyLatestPending = true;
+  send({ type: 'updateModels' });
+});
+function applyLatestModels() {
+  const moved = [];
+  panes.forEach(p => (p.knobSels || []).forEach(({ knob, sel }) => {
+    if (knob.list !== 'models') return;
+    const choices = choicesFor(p.kind, knob);
+    if (!choices.length || sel.value === choices[0]) return;
+    sel.value = choices[0];
+    sel.dispatchEvent(new Event('change')); // same path as picking it by hand
+    moved.push(`${paneTitle(p)} → ${choices[0]}`);
+  }));
+  if (moved.length) toast(`switched to latest: ${moved.join(' · ')}`, 'restart');
+  else toast('every pane is already on the newest model');
+}
 
 // ---------- pipelines ----------
 const pipelineEl = $('pipeline');
