@@ -7,6 +7,7 @@ A terminal cockpit for vibe coders. One prompt bar on top, up to four live AI CL
 ## What it does
 
 - **Broadcast**: type in the top bar, hit Enter, and the prompt is typed into every pane (Claude Code, Codex, Grok — any terminal AI CLI).
+- **Project folder switcher**: pick the folder every pane runs in from the header — recents remembered, every pane relaunches there.
 - **Panes are real terminals**: xterm.js + a real PTY per pane. Click in and type like normal.
 - **1–4 panes**, any mix — including the same CLI more than once (three Claudes, why not).
 - **Model / effort dropdowns** per pane: Claude switches in-session via `/model` and `/effort`; Codex and Grok relaunch with `-m` flags (their CLIs can't switch mid-session). Lists live in `models.json`; the **⟳ models** button refreshes them from the CLIs themselves (Grok via `grok models`, Claude/Codex by scraping their `/model` menus) — so new releases show up without touching code.
@@ -24,7 +25,7 @@ A terminal cockpit for vibe coders. One prompt bar on top, up to four live AI CL
 
 ```
 npm install
-node server.js
+npm start
 ```
 
 Then open http://localhost:18801 (or use `VibeDeck.bat`, which starts the server and opens a chromeless Edge app window).
@@ -36,5 +37,8 @@ Configure which CLIs are available in the `ROSTER` array at the top of `server.j
 - Windows-first: PTYs via `@lydell/node-pty` (prebuilt binaries, no compile), spawned through `cmd.exe`.
 - Broadcasts queue until each pane's input UI has actually painted — fresh CLIs silently eat text sent during startup.
 - Claude Code's folder-trust dialog is auto-cleared so it can't swallow your first prompt.
+
+- The landing page lives in `site/` — a single static file, deployable to Vercel/Netlify as-is.
+- Press the keyboard icon in the header (or check the help overlay) for all shortcuts.
 
 Built with Claude Code.

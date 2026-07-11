@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VibeDeck — one prompt, every AI CLI answers at once</title>
+<meta name="description" content="A terminal cockpit for vibe coders. Type once and Claude Code, Codex, and Grok all answer side by side — real terminals, an AI judge, relay pipelines, and a live token meter.">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg0: #0a0c0f; --bg1: #12151b; --bg2: #171b22;
+    --line: #252b35; --line2: #39414f;
+    --text: #dce3ee; --dim: #8a93a5; --faint: #525b6b;
+    --amber: #e8b45a; --amber-soft: #e8b45a26;
+    --claude: #d97757; --codex: #10a37f; --grok: #9aa2af;
+    --disp: "Chakra Petch", sans-serif;
+    --mono: "IBM Plex Mono", Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg0); color: var(--text); font-family: var(--mono);
+    font-size: 15px; line-height: 1.65; -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--amber-soft); }
+  a { color: inherit; }
+  svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
+    stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 2px; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- nav ---------- */
+  nav { position: sticky; top: 0; z-index: 20; background: #0a0c0fd9;
+    backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  nav::before { content: ""; display: block; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--amber) 18%, var(--amber) 82%, transparent); opacity: .55; }
+  .nav-in { display: flex; align-items: center; gap: 26px; padding: 14px 24px;
+    max-width: 1080px; margin: 0 auto; }
+  .brand { display: flex; align-items: center; gap: 9px; color: var(--amber);
+    font-family: var(--disp); font-weight: 700; letter-spacing: 3px; font-size: 15px;
+    text-decoration: none; }
+  .brand svg.i { width: 18px; height: 18px; stroke-width: 2; }
+  nav .links { display: flex; gap: 22px; margin-left: auto; font-size: 13px; }
+  nav .links a { color: var(--dim); text-decoration: none; }
+  nav .links a:hover { color: var(--text); }
+  .gh { display: flex; align-items: center; gap: 8px; font-size: 13px;
+    border: 1px solid var(--line2); border-radius: 7px; padding: 7px 14px;
+    text-decoration: none; color: var(--text); background: var(--bg2); }
+  .gh:hover { border-color: var(--amber); color: var(--amber); }
+
+  /* ---------- hero ---------- */
+  header.hero { padding: 84px 0 40px; text-align: center; }
+  .kicker { display: inline-flex; align-items: center; gap: 9px; color: var(--amber);
+    font-size: 12px; letter-spacing: 3px; text-transform: uppercase;
+    border: 1px solid var(--line2); border-radius: 999px; padding: 7px 16px;
+    background: var(--bg1); margin-bottom: 28px; }
+  .kicker .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--amber);
+    box-shadow: 0 0 8px var(--amber); animation: blink 2.2s ease infinite; }
+  @keyframes blink { 50% { opacity: .35; } }
+  h1 { font-family: var(--disp); font-weight: 700; font-size: clamp(34px, 6vw, 62px);
+    line-height: 1.08; letter-spacing: -.5px; max-width: 820px; margin: 0 auto; }
+  h1 .a { color: var(--amber); }
+  .sub { color: var(--dim); max-width: 640px; margin: 22px auto 0; font-size: 16px; }
+  .sub b { color: var(--text); font-weight: 500; }
+  .cta-row { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 34px; }
+  .btn { display: inline-flex; align-items: center; gap: 9px; font-family: var(--mono);
+    font-size: 14px; font-weight: 600; border-radius: 8px; padding: 13px 24px;
+    text-decoration: none; border: 1px solid transparent; }
+  .btn.primary { background: var(--amber); color: #15120a; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.ghost { border-color: var(--line2); color: var(--text); background: var(--bg1); }
+  .btn.ghost:hover { border-color: var(--amber); color: var(--amber); }
+  .install { display: inline-flex; align-items: center; gap: 12px; margin-top: 26px;
+    background: var(--bg1); border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 16px; font-size: 13px; color: var(--dim); }
+  .install code { color: var(--text); }
+  .install code .p { color: var(--amber); }
+  .install button { display: flex; background: none; border: none; color: var(--faint);
+    cursor: pointer; padding: 2px; }
+  .install button:hover { color: var(--amber); }
+
+  /* ---------- deck demo ---------- */
+  .demo { margin: 56px auto 0; max-width: 1080px; padding: 0 24px; }
+  .deckwin { background: var(--bg1); border: 1px solid var(--line2); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 30px 80px -20px #000c, 0 0 60px -30px var(--amber-soft); }
+  .deckbar { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line); background: var(--bg2); }
+  .deckbar .sigil { color: var(--amber); font-weight: 600; font-size: 14px; }
+  .deckbar .typed { flex: 1; text-align: left; font-size: 14px; color: var(--text);
+    white-space: nowrap; overflow: hidden; }
+  .caret { display: inline-block; width: 8px; height: 16px; background: var(--amber);
+    vertical-align: text-bottom; animation: blink 1s steps(1) infinite; }
+  .deckbar .tag { color: var(--faint); font-size: 11px; letter-spacing: 2px; }
+  .panes3 { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--line); gap: 1px; }
+  .dpane { background: var(--bg0); min-height: 270px; display: flex; flex-direction: column; text-align: left; }
+  .dpane .ph { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--bg1); border-bottom: 1px solid var(--line);
+    font-size: 11px; font-weight: 600; letter-spacing: 2px; }
+  .dpane .ph .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+    box-shadow: 0 0 7px currentColor; }
+  .dpane .ph .st { margin-left: auto; color: var(--faint); font-weight: 400; letter-spacing: 1px; font-size: 10px; }
+  .dpane pre { flex: 1; padding: 12px 14px; font-family: var(--mono); font-size: 12px;
+    line-height: 1.7; color: var(--dim); white-space: pre-wrap; word-break: break-word; overflow: hidden; }
+  .dpane pre .hl { color: var(--text); }
+  .dpane pre .cm { color: var(--faint); }
+
+  /* ---------- sections ---------- */
+  section { padding: 88px 0; }
+  .sec-kick { font-family: var(--disp); color: var(--amber); font-size: 12px;
+    letter-spacing: 4px; text-transform: uppercase; margin-bottom: 14px; }
+  h2 { font-family: var(--disp); font-weight: 700; font-size: clamp(26px, 4vw, 38px);
+    line-height: 1.15; max-width: 620px; }
+  .sec-sub { color: var(--dim); max-width: 620px; margin-top: 14px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 44px; }
+  .card { background: var(--bg1); border: 1px solid var(--line); border-radius: 12px;
+    padding: 24px 22px; position: relative; overflow: hidden; }
+  .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+    background: var(--amber); opacity: 0; transition: opacity .2s; }
+  .card:hover::before { opacity: .7; }
+  .card svg.i { width: 20px; height: 20px; color: var(--amber); margin-bottom: 14px; }
+  .card h3 { font-family: var(--disp); font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .card p { color: var(--dim); font-size: 13.5px; }
+  .card p code { color: var(--text); font-size: 12.5px; }
+
+  /* ---------- how ---------- */
+  #how { border-top: 1px solid var(--line); }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 44px; }
+  .step { border: 1px solid var(--line); border-radius: 12px; padding: 24px 22px; background: var(--bg1); }
+  .step .n { font-family: var(--disp); color: var(--amber); font-size: 13px;
+    letter-spacing: 2px; margin-bottom: 12px; }
+  .step h3 { font-family: var(--disp); font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+  .step p { color: var(--dim); font-size: 13.5px; }
+  .step code { display: block; margin-top: 12px; background: var(--bg0); border: 1px solid var(--line);
+    border-radius: 7px; padding: 10px 12px; font-size: 12.5px; color: var(--text); overflow-x: auto; }
+  .step code .p { color: var(--amber); }
+
+  /* ---------- pricing ---------- */
+  #pricing { border-top: 1px solid var(--line); }
+  .plans { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 44px; max-width: 760px; }
+  .plan { border: 1px solid var(--line); border-radius: 14px; padding: 30px 28px; background: var(--bg1); }
+  .plan.pro { border-color: var(--amber); box-shadow: 0 0 50px -22px var(--amber-soft); position: relative; }
+  .plan .soon { position: absolute; top: -11px; right: 20px; background: var(--amber); color: #15120a;
+    font-family: var(--disp); font-size: 11px; font-weight: 700; letter-spacing: 2px;
+    border-radius: 5px; padding: 3px 10px; }
+  .plan h3 { font-family: var(--disp); font-size: 15px; letter-spacing: 2px; text-transform: uppercase; color: var(--dim); }
+  .plan .price { font-family: var(--disp); font-size: 42px; font-weight: 700; margin: 12px 0 2px; }
+  .plan .price small { font-size: 15px; color: var(--dim); font-weight: 500; }
+  .plan .for { color: var(--faint); font-size: 12.5px; margin-bottom: 20px; }
+  .plan ul { list-style: none; display: grid; gap: 10px; margin-bottom: 26px; }
+  .plan li { display: flex; gap: 10px; color: var(--dim); font-size: 13.5px; }
+  .plan li svg.i { width: 15px; height: 15px; color: var(--amber); margin-top: 3px; }
+  .plan .btn { width: 100%; justify-content: center; }
+
+  /* ---------- footer ---------- */
+  footer { border-top: 1px solid var(--line); padding: 36px 0 44px; }
+  .foot-in { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  footer .brand { font-size: 13px; }
+  footer .fine { color: var(--faint); font-size: 12px; margin-left: auto; }
+  footer .fine a { color: var(--dim); }
+
+  .reveal { opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  @media (max-width: 900px) {
+    .grid, .steps { grid-template-columns: 1fr 1fr; }
+    .panes3 { grid-template-columns: 1fr; }
+    .dpane:nth-child(n+2) { display: none; }
+  }
+  @media (max-width: 620px) {
+    .grid, .steps, .plans { grid-template-columns: 1fr; }
+    nav .links { display: none; }
+    header.hero { padding-top: 56px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    .reveal { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-in">
+    <a class="brand" href="#"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="5.4" height="16" rx="1"/><rect x="9.9" y="4" width="5.4" height="16" rx="1"/><rect x="16.8" y="4" width="5.4" height="16" rx="1"/></svg>VIBEDECK</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#pricing">Pricing</a>
+    </div>
+    <a class="gh" href="https://github.com/7LayerLabs/vibedeck">
+      <svg class="i" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"/></svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <div class="kicker"><span class="pulse"></span>Windows terminal cockpit for AI CLIs</div>
+  <h1>One prompt.<br><span class="a">Every AI</span> answers at once.</h1>
+  <p class="sub">VibeDeck runs <b>Claude Code, Codex, and Grok</b> side by side in real terminals.
+    Type once and the whole deck goes to work — then compare the answers, let an
+    <b>AI judge</b> pick the winner, or chain them into a pipeline.</p>
+  <div class="cta-row">
+    <a class="btn primary" href="https://github.com/7LayerLabs/vibedeck">
+      <svg class="i" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+      Get VibeDeck free</a>
+    <a class="btn ghost" href="#how">See how it works</a>
+  </div>
+  <div class="install">
+    <code><span class="p">&gt;</span> git clone github.com/7LayerLabs/vibedeck && npm install && npm start</code>
+    <button id="copyBtn" title="copy install command" aria-label="copy install command">
+      <svg class="i" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </button>
+  </div>
+</header>
+
+<div class="demo">
+  <div class="deckwin" aria-label="Animated demo of VibeDeck broadcasting one prompt to three AI terminals">
+    <div class="deckbar">
+      <span class="sigil">vibe&gt;</span>
+      <span class="typed" id="typed"></span><span class="caret" id="caret"></span>
+      <span class="tag">BROADCAST</span>
+    </div>
+    <div class="panes3">
+      <div class="dpane" style="color:var(--claude)">
+        <div class="ph"><span class="dot"></span>CLAUDE<span class="st" id="st0"></span></div>
+        <pre id="out0"></pre>
+      </div>
+      <div class="dpane" style="color:var(--codex)">
+        <div class="ph"><span class="dot"></span>CODEX<span class="st" id="st1"></span></div>
+        <pre id="out1"></pre>
+      </div>
+      <div class="dpane" style="color:var(--grok)">
+        <div class="ph"><span class="dot"></span>GROK<span class="st" id="st2"></span></div>
+        <pre id="out2"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section id="features" class="wrap">
+  <div class="sec-kick">The deck</div>
+  <h2>Stop alt-tabbing between three AI assistants.</h2>
+  <p class="sec-sub">Every pane is a real PTY — click in and type like a normal terminal.
+    VibeDeck just makes them act like one machine.</p>
+  <div class="grid">
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5M19.1 4.9c3.9 3.9 3.9 10.3 0 14.2"/><circle cx="12" cy="12" r="2"/></svg>
+      <h3>Broadcast</h3>
+      <p>Type in the top bar, hit Enter, and the prompt lands in every pane —
+        Claude Code, Codex, Grok, or three Claudes if that's your mood.</p>
+    </div>
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>
+      <h3>Real terminals</h3>
+      <p>xterm.js + a real PTY per pane. Answer permission prompts, run slash
+        commands, drop images — it's the actual CLI, not a wrapper API.</p>
+    </div>
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M19 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M8 21h8"/></svg>
+      <h3>Compare + AI judge</h3>
+      <p>See every model's answer side by side, crown a winner, and keep a
+        running tally — or let a headless judge rule on the round and merge the best ideas.</p>
+    </div>
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      <h3>Relay + pipelines</h3>
+      <p>Pipe one pane's answer into another as its next prompt — or run
+        hands-free chains: <code>plan → build → review</code> across three different models.</p>
+    </div>
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 15l4-6"/><path d="M4 17.5a9 9 0 1 1 16 0"/></svg>
+      <h3>Live token meter</h3>
+      <p>Today's usage and api-rate cost across all three CLIs — per model,
+        cache reads included, plan window tracked. Know what the deck is burning.</p>
+    </div>
+    <div class="card reveal">
+      <svg class="i" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      <h3>Playbooks + history</h3>
+      <p>Starter prompts as plain markdown files, one click to insert.
+        Every broadcast saved and searchable.</p>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="sec-kick">Run your deck</div>
+    <h2>Three minutes from clone to cockpit.</h2>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="n">STEP 1</div>
+        <h3>Install</h3>
+        <p>Node + the AI CLIs you already use. No accounts, no cloud — VibeDeck runs on your machine.</p>
+        <code><span class="p">&gt;</span> git clone github.com/7LayerLabs/vibedeck<br><span class="p">&gt;</span> npm install && npm start</code>
+      </div>
+      <div class="step reveal">
+        <div class="n">STEP 2</div>
+        <h3>Point it at a project</h3>
+        <p>Pick your project folder from the header. Every pane relaunches there — same repo, three brains.</p>
+      </div>
+      <div class="step reveal">
+        <div class="n">STEP 3</div>
+        <h3>Broadcast</h3>
+        <p>Type once. Watch three models race. Compare, judge, relay, ship.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="pricing">
+  <div class="wrap">
+    <div class="sec-kick">Pricing</div>
+    <h2>Free to run. Pro when you're hooked.</h2>
+    <div class="plans">
+      <div class="plan reveal">
+        <h3>Open source</h3>
+        <div class="price">$0</div>
+        <div class="for">the whole cockpit, MIT licensed</div>
+        <ul>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Up to 4 panes, any CLI mix</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Broadcast, compare, AI judge</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Relay, pipelines, playbooks</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Token meter</li>
+        </ul>
+        <a class="btn ghost" href="https://github.com/7LayerLabs/vibedeck">Clone it now</a>
+      </div>
+      <div class="plan pro reveal">
+        <span class="soon">COMING SOON</span>
+        <h3>Deck Pro</h3>
+        <div class="price">$9<small>/mo</small></div>
+        <div class="for">for people who ship with the deck daily</div>
+        <ul>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Custom pipeline builder UI</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Judge scorecards + win analytics over time</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Cost budgets + alerts on the meter</li>
+          <li><svg class="i" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Priority support from the builder</li>
+        </ul>
+        <a class="btn primary" href="mailto:sevenlayerlabs@hotmail.com?subject=VibeDeck%20Pro%20waitlist">Join the waitlist</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <a class="brand" href="#"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="5.4" height="16" rx="1"/><rect x="9.9" y="4" width="5.4" height="16" rx="1"/><rect x="16.8" y="4" width="5.4" height="16" rx="1"/></svg>VIBEDECK</a>
+    <span class="fine">Built by 7Layer Labs · <a href="https://github.com/7LayerLabs/vibedeck">github.com/7LayerLabs/vibedeck</a></span>
+  </div>
+</footer>
+
+<script>
+// ---- hero deck demo: type a prompt, three panes answer in their own voice ----
+const ROUNDS = [
+  {
+    prompt: 'find the bug in checkout.js and fix it',
+    outs: [
+      'Reading checkout.js…\n\nFound it — <span class="hl">applyDiscount()</span> mutates the\ncart total before tax is computed.\n\n<span class="hl">Fixed:</span> moved tax calc ahead of the\ndiscount, added a regression test.\n<span class="cm">2 files changed · tests passing</span>',
+      'Scanning checkout flow…\n\nThe rounding in <span class="hl">line 142</span> drops cents\non split payments.\n\nPatch applied with <span class="hl">Math.round</span> at the\nboundary. Running the suite now.\n<span class="cm">checkout.spec.js · 14/14 pass</span>',
+      'Looked at checkout.js.\n\nYour discount stacks twice when a promo\nand a gift card hit the same order.\n\nGuarded it behind one <span class="hl">reduce()</span> pass.\n<span class="cm">shorter than the original, too</span>',
+    ],
+  },
+  {
+    prompt: 'plan a pricing page A/B test for next week',
+    outs: [
+      'Here\'s a two-variant plan:\n\n<span class="hl">A:</span> current 3-tier layout\n<span class="hl">B:</span> single "Pro" spotlight + FAQ\n\nPrimary metric: checkout starts.\nMinimum run: 2 weeks at your traffic.\n<span class="cm">full brief written to plan.md</span>',
+      'Proposal:\n\nTest <span class="hl">annual-first toggle</span> vs monthly-first.\nRevenue per visitor as the metric,\nguardrail on refund rate.\n\nI\'ve scaffolded the flag in\n<span class="hl">experiments.ts</span>.',
+      'Straight take: your traffic is too low\nfor a 4-way split.\n\nRun <span class="hl">one bold change</span> — price anchor at\n$19 with the $9 tier beside it.\nCall it at 500 sessions/arm.\n<span class="cm">math in the thread</span>',
+    ],
+  },
+];
+const typedEl = document.getElementById('typed');
+const outs = [0, 1, 2].map(i => document.getElementById('out' + i));
+const sts = [0, 1, 2].map(i => document.getElementById('st' + i));
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function typeInto(el, html, speed, done) {
+  // types text char by char but injects tags atomically
+  const parts = html.split(/(<[^>]+>)/).filter(Boolean);
+  let pi = 0, ci = 0, acc = '';
+  (function step() {
+    if (pi >= parts.length) return done && done();
+    const part = parts[pi];
+    if (part.startsWith('<')) { acc += part; pi++; el.innerHTML = acc; return step(); }
+    ci++;
+    el.innerHTML = acc + part.slice(0, ci).replace(/\n/g, '<br>');
+    if (ci >= part.length) { acc += part.replace(/\n/g, '<br>'); pi++; ci = 0; }
+    setTimeout(step, speed + Math.random() * speed);
+  })();
+}
+
+let round = 0;
+function playRound() {
+  const r = ROUNDS[round % ROUNDS.length];
+  round++;
+  outs.forEach(o => o.innerHTML = '');
+  sts.forEach(s => s.textContent = '');
+  typedEl.textContent = '';
+  if (reduced) { // no animation: show the finished round
+    typedEl.textContent = r.prompt;
+    outs.forEach((o, i) => o.innerHTML = r.outs[i].replace(/\n/g, '<br>'));
+    sts.forEach(s => s.textContent = 'DONE');
+    return;
+  }
+  let ci = 0;
+  (function typePrompt() {
+    typedEl.textContent = r.prompt.slice(0, ++ci);
+    if (ci < r.prompt.length) return setTimeout(typePrompt, 34 + Math.random() * 40);
+    setTimeout(() => {
+      sts.forEach(s => s.textContent = 'WORKING');
+      let doneCount = 0;
+      outs.forEach((o, i) => {
+        setTimeout(() => typeInto(o, r.outs[i], 9 + i * 3, () => {
+          sts[i].textContent = 'DONE';
+          if (++doneCount === 3) setTimeout(playRound, 5200);
+        }), 350 + i * 500);
+      });
+    }, 420);
+  })();
+}
+playRound();
+
+// ---- copy install command ----
+document.getElementById('copyBtn').addEventListener('click', (e) => {
+  navigator.clipboard.writeText('git clone https://github.com/7LayerLabs/vibedeck && cd vibedeck && npm install && npm start');
+  e.currentTarget.style.color = 'var(--amber)';
+  setTimeout(() => e.currentTarget && (e.currentTarget.style.color = ''), 1200);
+});
+
+// ---- scroll reveals ----
+const io = new IntersectionObserver(es => es.forEach(en => {
+  if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
+}), { threshold: .15 });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
