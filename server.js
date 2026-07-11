@@ -445,17 +445,19 @@ function pushToNotes(fromId) {
   const label = kindOf(s.kind).label;
   broadcastWs({ type: 'notesWorking', from: fromId });
   const prompt =
-`Below is output from an AI coding assistant. It may contain terminal rendering noise; ignore that.
+`Ignore any memory, prior context, or instructions about the user — work ONLY from the text between the dashes below. It is raw terminal output from an AI assistant and may contain leftover interface noise; skip the noise and rewrite only what the assistant actually said, in plain everyday English:
 
-Write the user's NEXT STEPS as a short numbered checklist in plain everyday English:
-- no code, no file paths unless essential, no jargon — explain technical steps in plain words
-- one short sentence per step, max 8 steps
-- if there are no action items, give a 2-sentence plain-English summary instead
+- If it gave instructions or things to do: a numbered checklist, one short sentence per step, max 8 steps.
+- Otherwise (news, explanations, research, answers): short bullet points of the key facts, keeping every name, number, and date exactly as given.
+- Plain words — no code or jargon unless quoting something essential.
+- NEVER add anything that is not in the text. No greetings, no sign-off, no offers to help further.
+- If there is no real content to rewrite, reply exactly: (nothing captured from this pane)
 
-Output only the checklist (or summary). Do not use any tools. Do not read or write any files. Reply directly.
+Output only the checklist or bullets. Do not use any tools. Do not read or write any files. Reply directly.
 
 ---
-${src}`;
+${src}
+---`;
   const child = IS_WIN
     ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env })
     : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: __dirname, env: process.env });
