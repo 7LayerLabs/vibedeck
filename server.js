@@ -439,8 +439,14 @@ function pushToNotes(fromId) {
   const s = sessions.get(fromId);
   if (!s) return;
   if (distilling) return broadcastWs({ type: 'notesError', text: 'still writing the last note — give it a few seconds' });
-  const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024)).slice(-12 * 1024);
-  if (src.length < 10) return broadcastWs({ type: 'notesError', text: 'nothing in that pane to note yet' });
+  const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+  if (src.length < 40) {
+    // tiny after cleanup = pane is mid-answer (spinners only) or truly idle
+    const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
+    return broadcastWs({ type: 'notesError', text: busy
+      ? `${kindOf(s.kind).label} is still answering — let it finish, then hit → notes`
+      : 'nothing in that pane to note yet — broadcast a prompt first' });
+  }
   distilling = true;
   const label = kindOf(s.kind).label;
   broadcastWs({ type: 'notesWorking', from: fromId });
@@ -477,7 +483,8 @@ ${src}
     const when = new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const body = ok ? out.trim() : src.slice(-2000); // distiller failed: keep the raw answer
     const cur = readNotes();
-    writeNotes(`${cur ? cur.replace(/\s+$/, '') + '\n\n' : ''}## ${label} · ${when}${ok ? '' : ' (raw — plain-english rewrite failed)'}\n\n${body}\n`);
+    const rule = '─'.repeat(46);
+    writeNotes(`${cur ? cur.replace(/\s+$/, '') + `\n\n${rule}\n` : ''}## ${label} · ${when}${ok ? '' : ' (raw — plain-english rewrite failed)'}\n\n${body}\n`);
     broadcastWs({ type: 'notes', text: readNotes() });
     broadcastWs({ type: 'notesAppended', from: fromId, ok });
   });
