@@ -165,6 +165,10 @@
   .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--amber); }
   .pane.dropping { outline: 2px dashed var(--amber); outline-offset: -3px; }
   .term { flex: 1; min-height: 0; padding: 5px 0 5px 7px; }
+  .note-area { flex: 1; min-height: 0; resize: none; background: var(--term); color: var(--text);
+    border: none; outline: none; padding: 12px 14px; font: inherit; font-size: 13px;
+    line-height: 1.65; caret-color: var(--amber); }
+  .note-area::placeholder { color: var(--faint); }
 
   .dead-cover { position: absolute; inset: 30px 0 0 0; z-index: 6; display: none;
     align-items: center; justify-content: center; flex-direction: column; gap: 12px;
@@ -282,6 +286,7 @@
       <select id="paneCount" title="how many panes">
         <option value="1">1 pane</option><option value="2">2 panes</option>
         <option value="3">3 panes</option><option value="4">4 panes</option>
+        <option value="5">5 panes</option>
       </select>
       <svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
     </div>
@@ -361,7 +366,8 @@
       <tr><td><kbd>Enter</kbd></td><td class="d">broadcast the prompt to every pane marked <b>bcast</b></td></tr>
       <tr><td><kbd>&uarr;</kbd> / <kbd>&darr;</kbd></td><td class="d">cycle prompt history in the bar</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>0</kbd></td><td class="d">jump back to the prompt bar</td></tr>
-      <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>&hellip;<kbd>4</kbd></td><td class="d">focus pane 1&ndash;4</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>&hellip;<kbd>5</kbd></td><td class="d">focus pane 1&ndash;5</td></tr>
+      <tr><td>&rarr; notes</td><td class="d">on any AI pane: rewrites its last answer as plain-english next steps in the NOTES pane</td></tr>
       <tr><td><kbd>Esc</kbd></td><td class="d">close overlays here &middot; interrupts the CLI inside a pane</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd> / drop</td><td class="d">paste or drop an image onto a pane &mdash; its path is typed into that CLI</td></tr>
       <tr><td>drag divider</td><td class="d">resize panes &middot; double-click resets</td></tr>
@@ -376,7 +382,7 @@
 <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
 <script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
 <script>
-const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9aa2af', shell: '#7aa2f7' };
+const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9aa2af', shell: '#7aa2f7', notes: '#e8b45a' };
 // Per-kind dropdowns. Choices live in models.json on the server (refresh pulls them).
 // mode 'slash':    types the slash command into the running session (no restart)
 // mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
@@ -394,6 +400,7 @@ const KNOBS = {
     { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort', list: 'efforts' },
   ],
   shell: [],
+  notes: [],
 };
 let modelsCfg = {}; // kind -> { models: [], efforts: [] }, from the server
 const choicesFor = (kind, knob) => knob.choices || (modelsCfg[kind] || {})[knob.list] || [];
@@ -409,12 +416,13 @@ const ICONS = {
   scale: '<svg class="i" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M19 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M8 21h8"/></svg>',
   folder: '<svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   chain: '<svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
+  note: '<svg class="i" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
 };
 
 const ws = new WebSocket(`ws://${location.host}`);
 const panes = new Map(); // instance id -> pane object (insertion order = layout order)
-let roster = [], maxPanes = 4, history = [], histIdx = -1, playbooks = [], pipelines = [];
-let cwd = '', recents = [];
+let roster = [], maxPanes = 5, history = [], histIdx = -1, playbooks = [], pipelines = [];
+let cwd = '', recents = [], notesText = '';
 const $ = id => document.getElementById(id);
 const promptEl = $('prompt'), panesEl = $('panes'), paneCountEl = $('paneCount');
 
@@ -442,6 +450,7 @@ function slashCommand(paneId, cmd, arg) {
 }
 
 function buildPane(info) {
+  const isNotes = info.kind === 'notes';
   const el = document.createElement('div');
   el.className = 'pane';
   el.innerHTML = `
@@ -454,6 +463,7 @@ function buildPane(info) {
       <span class="key"></span>
       <span class="spacer"></span>
       <span class="ctl">
+        <button class="tn" title="turn this pane's last answer into plain-english next steps in the NOTES pane">&rarr; notes</button>
         <select class="relay" title="send this pane's last answer to another pane"><option value="">relay to</option></select>
         <button class="mv left" title="move pane left"><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
         <button class="mv right" title="move pane right"><svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
@@ -462,12 +472,56 @@ function buildPane(info) {
         <button class="x" title="close pane (kills this CLI)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
       </span>
     </div>
-    <div class="term"></div>
+    ${isNotes
+      ? '<textarea class="note-area" spellcheck="false" placeholder="your notepad — autosaves. Hit → notes on any AI pane to drop its answer here as plain-english next steps."></textarea>'
+      : '<div class="term"></div>'}
     <div class="dead-cover">
       <span class="msg">session exited</span>
       <button class="dead-rs">${ICONS.restart}restart ${(info.label || '').toLowerCase()}</button>
     </div>`;
   panesEl.appendChild(el);
+
+  if (isNotes) {
+    // notepad pane: no PTY — a shared autosaving textarea (data/notes.md)
+    ['.knobs', '.yolo', '.tn', '.relay', '.bc', '.rs'].forEach(sel => el.querySelector(sel)?.remove());
+    const ta = el.querySelector('.note-area');
+    ta.value = notesText;
+    let saveTimer;
+    ta.addEventListener('input', () => {
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => send({ type: 'notesSet', text: ta.value }), 500);
+    });
+    ta.addEventListener('focus', () => {
+      document.querySelectorAll('.pane').forEach(p => p.classList.remove('focused'));
+      el.classList.add('focused');
+    });
+    ta.addEventListener('blur', () => el.classList.remove('focused'));
+    const pane = { term: null, fit: null, el, noteEl: ta, broadcast: false, id: info.id, kind: info.kind, label: info.label, dead: false, knobSels: [] };
+    const cliSel = el.querySelector('.cli');
+    cliSel.innerHTML = roster.map(r =>
+      `<option value="${r.id}" ${r.id === info.kind ? 'selected' : ''}>${r.label}</option>`).join('');
+    cliSel.style.color = color(info.kind);
+    cliSel.addEventListener('change', () => {
+      const target = cliSel.value;
+      cliSel.value = info.kind;
+      if (target !== info.kind) send({ type: 'replace', pane: info.id, kind: target });
+    });
+    const move = (dir) => {
+      const order = [...panes.keys()];
+      const i = order.indexOf(info.id), j = i + dir;
+      if (j < 0 || j >= order.length) return;
+      [order[i], order[j]] = [order[j], order[i]];
+      send({ type: 'reorder', order });
+    };
+    el.querySelector('.mv.left').addEventListener('click', () => move(-1));
+    el.querySelector('.mv.right').addEventListener('click', () => move(1));
+    el.querySelector('.x').addEventListener('click', () => {
+      if (panes.size > 1) send({ type: 'close', pane: info.id });
+    });
+    panes.set(info.id, pane);
+    relayout();
+    return;
+  }
 
   const term = new Terminal({
     theme: THEME, fontSize: 13, lineHeight: 1.15,
@@ -592,6 +646,7 @@ function buildPane(info) {
     pane.broadcast = !pane.broadcast;
     bcBtn.classList.toggle('on', pane.broadcast);
   });
+  el.querySelector('.tn').addEventListener('click', () => send({ type: 'toNotes', pane: info.id }));
   const doRestart = () => send({ type: 'restart', pane: info.id });
   el.querySelector('.rs').addEventListener('click', doRestart);
   el.querySelector('.dead-rs').addEventListener('click', doRestart);
@@ -688,12 +743,22 @@ function relayout() {
     applySplitTemplate();
     all.forEach((p, i) => { p.el.style.gridColumn = String(1 + i * 2); p.el.style.gridRow = '1'; });
     for (let i = 0; i < n - 1; i++) addSplitter('col', i, storeKey, String(2 + i * 2), '1');
-  } else {
+  } else if (n === 4) {
     frac = (saved && saved.cols?.length === 2 && saved.rows?.length === 2) ? saved : { cols: [1, 1], rows: [1, 1] };
     applySplitTemplate();
     const pos = [[1, 1], [3, 1], [1, 3], [3, 3]]; // [col, row]
     all.forEach((p, i) => { p.el.style.gridColumn = String(pos[i][0]); p.el.style.gridRow = String(pos[i][1]); });
     addSplitter('col', 0, storeKey, '2', '1 / -1');
+    addSplitter('row', 0, storeKey, '1 / -1', '2');
+  } else {
+    // 5 panes: 3 up top, 2 below — bottom-left spans two tracks so the last
+    // pane (usually NOTES) gets the right-hand column
+    frac = (saved && saved.cols?.length === 3 && saved.rows?.length === 2) ? saved : { cols: [1, 1, 1], rows: [1, 1] };
+    applySplitTemplate();
+    const pos = [['1', '1'], ['3', '1'], ['5', '1'], ['1 / 4', '3'], ['5', '3']]; // [gridColumn, gridRow]
+    all.forEach((p, i) => { p.el.style.gridColumn = pos[i][0]; p.el.style.gridRow = pos[i][1]; });
+    addSplitter('col', 0, storeKey, '2', '1');       // top row only — bottom-left spans across it
+    addSplitter('col', 1, storeKey, '4', '1 / -1');  // splits top 2|3 and bottom left|right
     addSplitter('row', 0, storeKey, '1 / -1', '2');
   }
   const kindCounts = {};
@@ -703,9 +768,9 @@ function relayout() {
     p.el.querySelector('.key').textContent = `ctrl+${i + 1}`;
     kindSeen[p.kind] = (kindSeen[p.kind] || 0) + 1;
     p.el.querySelector('.inst').textContent = kindCounts[p.kind] > 1 ? `#${kindSeen[p.kind]}` : '';
-    // rebuild relay targets (all other panes)
+    // rebuild relay targets (all other panes that can receive typed prompts)
     const relaySel = p.el.querySelector('.relay');
-    relaySel.innerHTML = '<option value="">relay to</option>' + all.filter(x => x !== p)
+    if (relaySel) relaySel.innerHTML = '<option value="">relay to</option>' + all.filter(x => x !== p && x.kind !== 'notes')
       .map(x => `<option value="${x.id}">${paneTitle(x)}</option>`).join('');
   });
   paneCountEl.value = String(n);
@@ -717,7 +782,7 @@ paneCountEl.addEventListener('change', () => {
   const want = Number(paneCountEl.value), cur = panes.size;
   if (want > cur) {
     const activeKinds = new Set([...panes.values()].map(p => p.kind));
-    const fresh = roster.filter(r => r.id !== 'shell' && !activeKinds.has(r.id)).map(r => r.id);
+    const fresh = roster.filter(r => r.id !== 'shell' && r.id !== 'notes' && !activeKinds.has(r.id)).map(r => r.id);
     for (let i = 0; i < want - cur; i++) send({ type: 'add', kind: fresh.shift() || 'claude' });
   } else if (want < cur) {
     [...panes.values()].slice(want).forEach(p => send({ type: 'close', pane: p.id }));
@@ -733,6 +798,7 @@ ws.onmessage = (ev) => {
     history = msg.history || []; playbooks = msg.playbooks || [];
     pipelines = msg.pipelines || [];
     modelsCfg = msg.models || {};
+    notesText = msg.notes || '';
     setCwd(msg.cwd || '', msg.recents || []);
     setPlaybooks();
     setPipelines();
@@ -805,6 +871,20 @@ ws.onmessage = (ev) => {
     repopulateKnobs();
     toast(`models: ${msg.report}`);
     if (applyLatestPending) { applyLatestPending = false; applyLatestModels(); }
+  } else if (msg.type === 'notes') {
+    notesText = msg.text || '';
+    panes.forEach(p => {
+      if (p.noteEl && document.activeElement !== p.noteEl) p.noteEl.value = notesText;
+    });
+  } else if (msg.type === 'notesWorking') {
+    toast('writing plain-english steps to the notepad… (takes ~15s)', 'note');
+  } else if (msg.type === 'notesAppended') {
+    const from = panes.get(msg.from);
+    toast(msg.ok ? `next steps from ${from ? paneTitle(from) : '?'} added to the notepad`
+                 : `couldn't simplify it — raw answer saved to the notepad instead`, 'note');
+    panes.forEach(p => { if (p.noteEl) p.noteEl.scrollTop = p.noteEl.scrollHeight; });
+  } else if (msg.type === 'notesError') {
+    toast(msg.text, 'note');
   } else if (msg.type === 'cwdChanged') {
     setCwd(msg.cwd, msg.recents || recents);
     $('cwdPanel').classList.remove('open');
@@ -1098,10 +1178,10 @@ document.addEventListener('keydown', (e) => {
       return;
     }
   }
-  if (e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
+  if (e.ctrlKey && ['1', '2', '3', '4', '5'].includes(e.key)) {
     e.preventDefault();
     const pane = [...panes.values()][Number(e.key) - 1];
-    pane?.term?.focus();
+    (pane?.term || pane?.noteEl)?.focus();
   } else if (e.ctrlKey && e.key === '0') {
     // Ctrl+0 returns to the prompt bar (Esc stays free — the CLIs use it to interrupt)
     e.preventDefault();

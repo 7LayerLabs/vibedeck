@@ -34,13 +34,14 @@ const ROSTER = [
   { id: 'codex',  label: 'CODEX',  cmd: CLI('codex'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
   { id: 'grok',   label: 'GROK',   cmd: IS_WIN ? path.join(HOME, '.grok', 'bin', 'grok.exe') : 'grok', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: IS_WIN ? 'powershell -NoLogo' : USER_SHELL, ready: IS_WIN ? /PS .*>/ : undefined },
+  { id: 'notes',  label: 'NOTES' }, // PTY-less: a plain-english notepad pane
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 // claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
 // kill the pane; typing "2" selects "Yes, I accept"
 const BYPASS_WARN = /Bypass\s*Permissions\s*mode/i;
 const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
-const MAX_PANES = 4;
+const MAX_PANES = 5;
 const BUFFER_MAX = 400 * 1024;
 const ROUND_MAX = 200 * 1024;
 
@@ -425,6 +426,58 @@ Plain text only. Do not use any tools. Do not read or write any files. Reply dir
   child.stdin.end();
 }
 
+// ---------- notepad (NOTES pane): one shared file + plain-english distiller ----------
+const NOTES_FILE = path.join(DATA_DIR, 'notes.md');
+function readNotes() { try { return fs.readFileSync(NOTES_FILE, 'utf8'); } catch { return ''; } }
+function writeNotes(text) { try { fs.writeFileSync(NOTES_FILE, text); } catch (e) { slog(`notes write failed: ${e.message}`); } }
+
+// "→ notes": distill a pane's last answer into jargon-free next steps via a
+// headless claude call (same pattern as the judge), append to the notepad
+let distilling = false;
+function pushToNotes(fromId) {
+  if (!firstPaneOfKind('notes')) return broadcastWs({ type: 'notesError', text: 'add a NOTES pane first — pick NOTES from any pane\'s dropdown' });
+  const s = sessions.get(fromId);
+  if (!s) return;
+  if (distilling) return broadcastWs({ type: 'notesError', text: 'still writing the last note — give it a few seconds' });
+  const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024)).slice(-12 * 1024);
+  if (src.length < 10) return broadcastWs({ type: 'notesError', text: 'nothing in that pane to note yet' });
+  distilling = true;
+  const label = kindOf(s.kind).label;
+  broadcastWs({ type: 'notesWorking', from: fromId });
+  const prompt =
+`Below is output from an AI coding assistant. It may contain terminal rendering noise; ignore that.
+
+Write the user's NEXT STEPS as a short numbered checklist in plain everyday English:
+- no code, no file paths unless essential, no jargon — explain technical steps in plain words
+- one short sentence per step, max 8 steps
+- if there are no action items, give a 2-sentence plain-English summary instead
+
+Output only the checklist (or summary). Do not use any tools. Do not read or write any files. Reply directly.
+
+---
+${src}`;
+  const child = IS_WIN
+    ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env })
+    : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: __dirname, env: process.env });
+  let out = '';
+  const timer = setTimeout(() => { try { child.kill(); } catch {} }, 90000);
+  child.stdout.on('data', d => out += d);
+  child.on('error', () => {});
+  child.on('close', () => {
+    clearTimeout(timer);
+    distilling = false;
+    const ok = !!out.trim();
+    const when = new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const body = ok ? out.trim() : src.slice(-2000); // distiller failed: keep the raw answer
+    const cur = readNotes();
+    writeNotes(`${cur ? cur.replace(/\s+$/, '') + '\n\n' : ''}## ${label} · ${when}${ok ? '' : ' (raw — plain-english rewrite failed)'}\n\n${body}\n`);
+    broadcastWs({ type: 'notes', text: readNotes() });
+    broadcastWs({ type: 'notesAppended', from: fromId, ok });
+  });
+  child.stdin.write(prompt);
+  child.stdin.end();
+}
+
 // ---------- pipeline runner (auto-relay chains, one at a time) ----------
 // A step is "done" when its pane's cleaned output stops growing for STABLE_MS
 // and the pane looks idle. cleanTui filters spinners, so constant animation
@@ -516,6 +569,7 @@ wss.on('connection', (ws) => {
     playbooks: readPlaybooks(),
     pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
     models: modelsCfg,
+    notes: readNotes(),
   }));
   if (pipeline) ws.send(JSON.stringify({ type: 'pipeline', state: 'step', name: pipeline.def.name,
     step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
@@ -591,6 +645,11 @@ wss.on('connection', (ws) => {
       if (!prompt) return;
       try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), text: prompt }) + '\n'); } catch {}
       startPipeline(msg.name, prompt);
+    } else if (msg.type === 'notesSet') {
+      writeNotes(String(msg.text ?? ''));
+      broadcastWs({ type: 'notes', text: readNotes() });
+    } else if (msg.type === 'toNotes') {
+      pushToNotes(msg.pane);
     } else if (msg.type === 'updateModels') {
       broadcastWs({ type: 'modelsUpdating' });
       updateModels();
