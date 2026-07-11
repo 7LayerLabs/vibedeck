@@ -28,13 +28,16 @@ npm install
 npm start
 ```
 
-Then open http://localhost:18801 (or use `VibeDeck.bat`, which starts the server and opens a chromeless Edge app window).
+Then open http://localhost:18801.
+
+- **Windows**: `VibeDeck.bat` starts the server and opens a chromeless Edge app window.
+- **macOS**: double-click `VibeDeck.command` (first run: right-click > Open). Install the CLIs you use first, e.g. `npm i -g @anthropic-ai/claude-code @openai/codex` — panes launch them from your normal PATH.
 
 Configure which CLIs are available in the `ROSTER` array at the top of `server.js`.
 
 ## Notes
 
-- Windows-first: PTYs via `@lydell/node-pty` (prebuilt binaries, no compile), spawned through `cmd.exe`.
+- Cross-platform: PTYs via `@lydell/node-pty` (prebuilt binaries, no compile) — `cmd.exe` on Windows, your login shell on macOS/Linux. The shell pane is PowerShell on Windows, zsh (or `$SHELL`) elsewhere.
 - Broadcasts queue until each pane's input UI has actually painted — fresh CLIs silently eat text sent during startup.
 - Claude Code's folder-trust dialog is auto-cleared so it can't swallow your first prompt.
 

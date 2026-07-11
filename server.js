@@ -23,13 +23,17 @@ fs.mkdirSync(IMAGE_DIR, { recursive: true });
 // The kinds of CLI a pane can run. Any kind can run in multiple panes at once.
 // ready: the pane isn't accepting typed prompts until this paints (dialogs/init eat input).
 // Patterns are space-elastic (\s*) because Ink paints sometimes swallow spaces.
+const IS_WIN = process.platform === 'win32';
 const NPM_BIN = path.join(process.env.APPDATA || '', 'npm');
+// windows needs the npm .cmd shims / grok.exe path; mac & linux find them on PATH
+const CLI = name => IS_WIN ? path.join(NPM_BIN, `${name}.cmd`) : name;
+const USER_SHELL = process.env.SHELL || '/bin/zsh';
 // flags: every pane launches in its CLI's skip-permissions mode
 const ROSTER = [
-  { id: 'claude', label: 'CLAUDE', cmd: path.join(NPM_BIN, 'claude.cmd'), flags: '--dangerously-skip-permissions', ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
-  { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
-  { id: 'grok',   label: 'GROK',   cmd: path.join(HOME, '.grok', 'bin', 'grok.exe'), flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
-  { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
+  { id: 'claude', label: 'CLAUDE', cmd: CLI('claude'), flags: '--dangerously-skip-permissions', ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
+  { id: 'codex',  label: 'CODEX',  cmd: CLI('codex'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
+  { id: 'grok',   label: 'GROK',   cmd: IS_WIN ? path.join(HOME, '.grok', 'bin', 'grok.exe') : 'grok', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
+  { id: 'shell',  label: 'SHELL',  cmd: IS_WIN ? 'powershell -NoLogo' : USER_SHELL, ready: IS_WIN ? /PS .*>/ : undefined },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 // claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
@@ -160,7 +164,9 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
   slog(`spawn ${id}: ${cmd}`);
   let proc;
   try {
-    proc = pty.spawn('cmd.exe', ['/c', cmd], {
+    // windows: cmd.exe /c runs the .cmd shims; mac/linux: login shell so the
+    // user's PATH (homebrew, nvm) is loaded before the CLI launches
+    proc = pty.spawn(IS_WIN ? 'cmd.exe' : USER_SHELL, IS_WIN ? ['/c', cmd] : ['-lc', cmd], {
       name: 'xterm-256color',
       cols: 100,
       rows: 40,
@@ -403,7 +409,9 @@ Give your verdict:
 
 Plain text only. Do not use any tools. Do not read or write any files. Reply directly.`;
 
-  const child = spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env });
+  const child = IS_WIN
+    ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env })
+    : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: __dirname, env: process.env });
   let out = '', err = '';
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 180000);
   child.stdout.on('data', d => out += d);
