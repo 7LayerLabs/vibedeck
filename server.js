@@ -468,6 +468,11 @@ ${src}
   child.on('close', () => {
     clearTimeout(timer);
     distilling = false;
+    // pane had no real answer: tell the user, don't pollute the notepad
+    if (/^\(nothing captured/i.test(out.trim())) {
+      return broadcastWs({ type: 'notesError',
+        text: `${label} hasn't answered anything since it last started — broadcast a prompt, let it finish, then hit → notes` });
+    }
     const ok = !!out.trim();
     const when = new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const body = ok ? out.trim() : src.slice(-2000); // distiller failed: keep the raw answer
