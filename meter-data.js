@@ -80,7 +80,11 @@ function claudeResult(opts) {
   if (since) {
     const projKey = String(opts.cwd || HOME).replace(/[^a-zA-Z0-9]/g, '-');
     const projPath = path.join(HOME, '.claude', 'projects', projKey) + path.sep;
-    session = summarizeClaude(m => m.birth >= since - 5000 && m.fp.startsWith(projPath));
+    // deck helpers (judge, notes rewriter) run headless from THIS folder —
+    // their cost is deck usage too, so the session meter counts them
+    const selfKey = String(__dirname).replace(/[^a-zA-Z0-9]/g, '-');
+    const selfPath = path.join(HOME, '.claude', 'projects', selfKey) + path.sep;
+    session = summarizeClaude(m => m.birth >= since - 5000 && (m.fp.startsWith(projPath) || m.fp.startsWith(selfPath)));
   }
   return { daily, session };
 }

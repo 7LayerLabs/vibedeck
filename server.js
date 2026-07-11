@@ -53,6 +53,9 @@ function slog(...args) {
   console.log(line);
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
 }
+// a helper process dying mid-write (EPIPE) must not take the whole deck down
+process.on('uncaughtException', e => slog(`UNCAUGHT: ${e.stack || e}`));
+process.on('unhandledRejection', e => slog(`UNHANDLED REJECTION: ${e}`));
 
 // ---------- state (pane kinds + project dir) ----------
 let state = { kinds: DEFAULT_ACTIVE, cwd: HOME, recents: [HOME] };
@@ -417,22 +420,26 @@ Plain text only. Do not use any tools. Do not read or write any files. Reply dir
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 180000);
   child.stdout.on('data', d => out += d);
   child.stderr.on('data', d => err += d);
+  child.on('error', () => {});
+  child.stdin.on('error', () => {}); // claude dying mid-write must not crash the deck
   child.on('close', () => {
     clearTimeout(timer);
     judging = false;
     broadcastWs({ type: 'judgement', ok: !!out.trim(), text: out.trim() || ('Judge failed: ' + err.slice(0, 400)) });
   });
-  child.stdin.write(judgePrompt);
-  child.stdin.end();
+  try { child.stdin.write(judgePrompt); child.stdin.end(); } catch {}
 }
 
-// ---------- notepad (NOTES pane): one shared file + plain-english distiller ----------
-const NOTES_FILE = path.join(DATA_DIR, 'notes.md');
+// ---------- notepad (NOTES pane): scratch text + structured note cards ----------
+const NOTES_FILE = path.join(DATA_DIR, 'notes.md');        // free-typing scratch area
+const NOTE_ITEMS_FILE = path.join(DATA_DIR, 'notes.json'); // pushed note cards
 function readNotes() { try { return fs.readFileSync(NOTES_FILE, 'utf8'); } catch { return ''; } }
 function writeNotes(text) { try { fs.writeFileSync(NOTES_FILE, text); } catch (e) { slog(`notes write failed: ${e.message}`); } }
+function readNoteItems() { try { return JSON.parse(fs.readFileSync(NOTE_ITEMS_FILE, 'utf8')); } catch { return []; } }
+function writeNoteItems(items) { try { fs.writeFileSync(NOTE_ITEMS_FILE, JSON.stringify(items, null, 2)); } catch (e) { slog(`notes.json write failed: ${e.message}`); } }
 
-// "→ notes": distill a pane's last answer into jargon-free next steps via a
-// headless claude call (same pattern as the judge), append to the notepad
+// "→ notes": rewrite a pane's last answer in plain english (keeping ALL the
+// detail) via a headless claude call, and add it as a collapsible note card
 let distilling = false;
 function pushToNotes(fromId) {
   if (!firstPaneOfKind('notes')) return broadcastWs({ type: 'notesError', text: 'add a NOTES pane first — pick NOTES from any pane\'s dropdown' });
@@ -451,15 +458,21 @@ function pushToNotes(fromId) {
   const label = kindOf(s.kind).label;
   broadcastWs({ type: 'notesWorking', from: fromId });
   const prompt =
-`Ignore any memory, prior context, or instructions about the user — work ONLY from the text between the dashes below. It is raw terminal output from an AI assistant and may contain leftover interface noise; skip the noise and rewrite only what the assistant actually said, in plain everyday English:
+`Ignore any memory, prior context, or instructions about the user — work ONLY from the text between the dashes below. It is raw terminal output from an AI assistant and may contain leftover interface noise; skip the noise and rewrite only what the assistant actually said.
 
-- If it gave instructions or things to do: a numbered checklist, one short sentence per step, max 8 steps.
-- Otherwise (news, explanations, research, answers): short bullet points of the key facts, keeping every name, number, and date exactly as given.
-- Plain words — no code or jargon unless quoting something essential.
-- NEVER add anything that is not in the text. No greetings, no sign-off, no offers to help further.
-- If there is no real content to rewrite, reply exactly: (nothing captured from this pane)
+Reply with ONLY a JSON object, no code fences: {"title": "...", "body": "..."}
 
-Output only the checklist or bullets. Do not use any tools. Do not read or write any files. Reply directly.
+title: a plain label for what this note is about, max 8 words.
+body: the assistant's answer rewritten in plain everyday English, KEEPING ALL the substance — every step with its full explanation, every score, name, number, and date exactly as given. You are reformatting, not shortening.
+Format the body like a tidy note:
+- short section headings on their own line ending with ":"
+- numbered steps, with their details indented on the lines below each step
+- scores or tabular data: one line per item like "Red Sox 5 — Yankees 3", grouped under headings
+- blank line between sections
+No code or jargon unless quoting something essential. NEVER add anything not in the text — no greetings, no sign-offs, no offers.
+If there is no real content: {"title": "nothing captured", "body": ""}
+
+Do not use any tools. Do not read or write any files. Reply directly.
 
 ---
 ${src}
@@ -471,25 +484,32 @@ ${src}
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 90000);
   child.stdout.on('data', d => out += d);
   child.on('error', () => {});
+  child.stdin.on('error', () => {}); // claude dying mid-write must not crash the deck
   child.on('close', () => {
     clearTimeout(timer);
     distilling = false;
-    // pane had no real answer: tell the user, don't pollute the notepad
-    if (/^\(nothing captured/i.test(out.trim())) {
+    let title = '', body = '';
+    try {
+      const m = out.match(/\{[\s\S]*\}/);
+      const j = JSON.parse(m[0]);
+      title = String(j.title || '').trim();
+      body = String(j.body || '').trim();
+    } catch { body = out.trim(); title = ''; } // unparseable: keep whatever it wrote
+    if (/^nothing captured/i.test(title) || (!body && !title)) {
       return broadcastWs({ type: 'notesError',
         text: `${label} hasn't answered anything since it last started — broadcast a prompt, let it finish, then hit → notes` });
     }
-    const ok = !!out.trim();
-    const when = new Date().toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    const body = ok ? out.trim() : src.slice(-2000); // distiller failed: keep the raw answer
-    const cur = readNotes();
-    const rule = '─'.repeat(46);
-    writeNotes(`${cur ? cur.replace(/\s+$/, '') + `\n\n${rule}\n` : ''}## ${label} · ${when}${ok ? '' : ' (raw — plain-english rewrite failed)'}\n\n${body}\n`);
-    broadcastWs({ type: 'notes', text: readNotes() });
+    const ok = !!body;
+    if (!ok) body = src.slice(-3000); // rewrite failed: keep the raw answer
+    if (!title) title = (body.split('\n').find(l => l.trim()) || 'note').slice(0, 60);
+    const items = readNoteItems();
+    items.push({ id: `${Date.now()}-${fromId}`, ts: Date.now(), kind: s.kind, label,
+                 title: title + (ok ? '' : ' (raw)'), body });
+    writeNoteItems(items);
+    broadcastWs({ type: 'noteItems', items });
     broadcastWs({ type: 'notesAppended', from: fromId, ok });
   });
-  child.stdin.write(prompt);
-  child.stdin.end();
+  try { child.stdin.write(prompt); child.stdin.end(); } catch {}
 }
 
 // ---------- pipeline runner (auto-relay chains, one at a time) ----------
@@ -584,6 +604,7 @@ wss.on('connection', (ws) => {
     pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
     models: modelsCfg,
     notes: readNotes(),
+    noteItems: readNoteItems(),
   }));
   if (pipeline) ws.send(JSON.stringify({ type: 'pipeline', state: 'step', name: pipeline.def.name,
     step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
@@ -664,6 +685,10 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'notes', text: readNotes() });
     } else if (msg.type === 'toNotes') {
       pushToNotes(msg.pane);
+    } else if (msg.type === 'noteDel') {
+      const items = readNoteItems().filter(n => n.id !== msg.id);
+      writeNoteItems(items);
+      broadcastWs({ type: 'noteItems', items });
     } else if (msg.type === 'updateModels') {
       broadcastWs({ type: 'modelsUpdating' });
       updateModels();
