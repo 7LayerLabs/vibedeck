@@ -1,14 +1,12 @@
 {
-  "name": "tri-term",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "vibedeck",
+  "version": "2.0.0",
+  "description": "A terminal cockpit for vibe coders — one prompt, every AI CLI answers at once",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.12",

@@ -3,3 +3,4 @@ data/
 state.json
 panes.json
 models.json
+.gstack/

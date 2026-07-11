@@ -7,166 +7,333 @@
 <link rel="stylesheet" href="/vendor/xterm/css/xterm.css">
 <style>
   :root {
-    --bg: #16181d;
-    --bg-panel: #1c1f26;
-    --border: #2a2e38;
-    --text: #d8dee9;
-    --dim: #6b7280;
-    --accent: #7aa2f7;
-    --warn: #e0af68;
-    --ok: #9ece6a;
-    --bad: #ef4444;
+    --bg0: #0a0c0f;      /* page chassis */
+    --bg1: #12151b;      /* panels / header */
+    --bg2: #171b22;      /* raised controls */
+    --bg3: #1e232c;      /* hover */
+    --term: #0e1116;     /* terminal wells */
+    --line: #252b35;
+    --line2: #39414f;
+    --text: #dce3ee;
+    --dim: #8a93a5;
+    --faint: #525b6b;
+    --amber: #e8b45a;    /* instrument accent */
+    --amber-soft: #e8b45a26;
+    --ok: #8fce6a;
+    --bad: #e5533f;
+    --claude: #d97757;
+    --codex: #10a37f;
+    --grok: #9aa2af;
+    --shell: #7aa2f7;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; background: var(--bg); color: var(--text);
-    font-family: "Cascadia Code", Consolas, monospace; overflow: hidden; }
+  html, body { height: 100%; background: var(--bg0); color: var(--text);
+    font-family: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+    font-size: 13px; overflow: hidden; }
+  ::selection { background: var(--amber-soft); }
+  svg.i { width: 14px; height: 14px; flex: none; display: block;
+    fill: none; stroke: currentColor; stroke-width: 1.7;
+    stroke-linecap: round; stroke-linejoin: round; }
+  button { font-family: inherit; }
 
   #app { display: flex; flex-direction: column; height: 100%; }
 
-  /* ---- top prompt bar ---- */
-  #promptbar { display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; background: var(--bg-panel);
-    border-bottom: 1px solid var(--border); }
-  #promptbar .sigil { color: var(--accent); font-weight: 700; }
-  #prompt { flex: 1; min-width: 200px; background: var(--bg); color: var(--text);
-    border: 1px solid var(--border); border-radius: 6px;
-    font: inherit; font-size: 15px; padding: 8px 12px; outline: none; }
-  #prompt:focus { border-color: var(--accent); }
-  #promptbar select, #promptbar button, #promptbar input.inline {
-    background: var(--bg); border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 12px; border-radius: 6px; padding: 7px 8px;
-    cursor: pointer; outline: none; }
-  #promptbar select:hover, #promptbar button:hover { border-color: var(--accent); }
+  /* ================= deck header ================= */
+  #deck { position: relative; display: flex; align-items: center; gap: 8px;
+    padding: 9px 12px; background: var(--bg1);
+    border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  #deck::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--amber) 18%, var(--amber) 82%, transparent); opacity: .55; }
 
-  /* ---- pipeline status chip ---- */
-  #pipeChip { display: none; align-items: center; gap: 6px; font-size: 12px;
-    color: var(--warn); border: 1px solid var(--warn); border-radius: 6px;
-    padding: 5px 8px; white-space: nowrap; }
+  .brand { display: flex; align-items: center; gap: 7px; color: var(--amber);
+    font-weight: 700; letter-spacing: 2.5px; font-size: 12px; user-select: none; }
+  .brand svg.i { width: 16px; height: 16px; stroke-width: 2; }
+
+  #cwdBtn { display: flex; align-items: center; gap: 6px; max-width: 220px;
+    background: var(--bg2); border: 1px solid var(--line); color: var(--dim);
+    border-radius: 6px; padding: 6px 9px; font-size: 12px; cursor: pointer; outline: none; }
+  #cwdBtn:hover, #cwdBtn.open { color: var(--text); border-color: var(--line2); }
+  #cwdBtn .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #cwdBtn svg.chev { width: 11px; height: 11px; }
+
+  .promptwrap { flex: 1; min-width: 220px; display: flex; align-items: center; gap: 8px;
+    background: var(--bg0); border: 1px solid var(--line); border-radius: 7px;
+    padding: 0 11px; height: 34px; }
+  .promptwrap:focus-within { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber-soft), 0 0 18px -6px var(--amber-soft); }
+  .promptwrap .sigil { color: var(--amber); font-weight: 700; font-size: 13px; user-select: none; }
+  #prompt { flex: 1; min-width: 80px; background: none; border: none; color: var(--text);
+    font: inherit; font-size: 14px; outline: none; caret-color: var(--amber); }
+  #prompt::placeholder { color: var(--faint); }
+  .promptwrap kbd { color: var(--faint); font-size: 10px; border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px; user-select: none; white-space: nowrap; }
+
+  .selwrap { position: relative; display: flex; align-items: center; }
+  .selwrap > svg.i { position: absolute; left: 8px; color: var(--dim); pointer-events: none; }
+  .selwrap > svg.chev { position: absolute; right: 7px; left: auto; width: 11px; height: 11px; color: var(--faint); }
+  .selwrap select { appearance: none; background: var(--bg2); border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 12px; border-radius: 6px;
+    padding: 6px 24px 6px 27px; cursor: pointer; outline: none; }
+  #playbook, #pipeline { width: 122px; }
+  #paneCount { padding-left: 10px; width: 92px; }
+  .selwrap select:hover { color: var(--text); border-color: var(--line2); }
+  .selwrap select option { background: var(--bg1); color: var(--text); }
+
+  #pipeChip { display: none; align-items: center; gap: 7px; font-size: 12px;
+    color: var(--amber); border: 1px solid var(--amber); background: var(--amber-soft);
+    border-radius: 6px; padding: 5px 8px; white-space: nowrap; }
   #pipeChip.on { display: flex; }
-  #pipeChip .pc-x { background: none; border: none; color: var(--warn);
-    font: inherit; font-size: 14px; cursor: pointer; padding: 0 2px; }
+  #pipeChip svg.i { animation: spin 2.4s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #pipeChip .pc-x { background: none; border: none; color: var(--amber);
+    font: inherit; font-size: 14px; cursor: pointer; padding: 0 2px; line-height: 1; }
   #pipeChip .pc-x:hover { color: var(--bad); }
 
-  /* ---- panes + meter sidebar ---- */
+  .tools { display: flex; align-items: center; gap: 6px; }
+  .tbtn { display: flex; align-items: center; gap: 6px;
+    background: var(--bg2); border: 1px solid var(--line); color: var(--dim);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 6px 10px;
+    cursor: pointer; outline: none; }
+  .tbtn:hover { color: var(--text); border-color: var(--line2); }
+  .tbtn.on { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+  .tbtn.icon-only { padding: 6px 7px; }
+
+  /* ---- folder panel ---- */
+  #cwdPanel { position: fixed; z-index: 40; top: 52px; left: 12px; width: 460px; max-width: calc(100vw - 24px);
+    background: var(--bg1); border: 1px solid var(--line2); border-radius: 10px;
+    box-shadow: 0 18px 50px -12px #000c; padding: 14px; display: none; }
+  #cwdPanel.open { display: block; }
+  #cwdPanel .lb { font-size: 10px; letter-spacing: 1.5px; color: var(--faint); text-transform: uppercase; margin-bottom: 7px; }
+  #cwdPanel .cur { font-size: 12px; color: var(--amber); word-break: break-all; margin-bottom: 12px; }
+  #cwdPanel .row { display: flex; gap: 7px; margin-bottom: 12px; }
+  #cwdInput { flex: 1; background: var(--bg0); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 7px 10px; outline: none; }
+  #cwdInput:focus { border-color: var(--amber); }
+  #cwdGo { background: var(--amber); border: 1px solid var(--amber); color: #15120a;
+    font: inherit; font-size: 12px; font-weight: 700; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+  #cwdGo:hover { filter: brightness(1.1); }
+  #cwdRecents .r-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+    border-radius: 6px; font-size: 12px; color: var(--dim); cursor: pointer; }
+  #cwdRecents .r-item:hover { background: var(--bg2); color: var(--text); }
+  #cwdRecents .r-item svg.i { width: 13px; height: 13px; color: var(--faint); }
+  #cwdRecents .r-item .p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #cwdPanel .note { font-size: 10px; color: var(--faint); margin-top: 10px; line-height: 1.6; }
+
+  /* ================= panes ================= */
   #main { flex: 1; display: flex; min-height: 0; }
-  #panes { flex: 1; display: grid; min-width: 0; min-height: 0; background: var(--border); }
-  #meterbar { width: 0; border-left: 1px solid var(--border); background: #101216;
+  #panes { flex: 1; display: grid; min-width: 0; min-height: 0; background: var(--line); }
+  #meterbar { width: 0; border-left: 1px solid var(--line); background: var(--bg0);
     overflow: hidden; transition: width .18s ease; flex: none; }
   #meterbar.open { width: 340px; }
   #meterbar iframe { width: 340px; height: 100%; border: 0; display: block; }
-  #promptbar button#meterBtn.on { color: var(--warn); border-color: var(--warn); }
-  .split { background: var(--border); z-index: 5; }
+
+  .split { background: var(--line); z-index: 5; }
   .split-col { cursor: col-resize; }
   .split-row { cursor: row-resize; }
-  .split:hover, .split.active { background: var(--accent); }
-  .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-  .pane-head { display: flex; align-items: center; gap: 5px;
-    padding: 4px 8px; background: var(--bg-panel);
-    border-bottom: 1px solid var(--border); font-size: 12px; user-select: none; }
-  .pane-head .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-  .pane.dead .dot { background: var(--bad) !important; }
-  .pane-head select.cli { background: none; border: none; font: inherit; font-size: 12px;
-    font-weight: 700; letter-spacing: 1px; cursor: pointer; outline: none; }
-  .pane-head select.cli option { background: var(--bg-panel); color: var(--text); font-weight: 400; }
-  .pane-head .inst, .pane-head .key { color: var(--dim); font-size: 11px; }
-  .pane-head select.opt, .pane-head select.relay { background: var(--bg); border: 1px solid var(--border);
-    color: var(--dim); font: inherit; font-size: 11px; border-radius: 4px;
-    padding: 1px 3px; cursor: pointer; outline: none; max-width: 120px; }
-  .pane-head select.opt:hover, .pane-head select.relay:hover { color: var(--text); border-color: var(--dim); }
-  .pane-head .spacer { flex: 1; }
-  .pane-head button { background: none; border: 1px solid var(--border);
-    color: var(--dim); font: inherit; font-size: 11px; border-radius: 4px;
-    padding: 1px 6px; cursor: pointer; }
-  .pane-head button:hover { color: var(--text); border-color: var(--dim); }
-  .pane-head button.bc.on { color: var(--accent); border-color: var(--accent); }
-  .pane-head button.yolo.on { color: var(--warn); border-color: var(--warn); }
-  .pane-head button.x:hover { color: var(--bad); border-color: var(--bad); }
-  .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--accent); }
-  .pane.dropping { outline: 2px dashed var(--accent); outline-offset: -3px; }
-  .term { flex: 1; min-height: 0; padding: 4px 0 4px 6px; }
+  .split:hover, .split.active { background: var(--amber); }
 
-  /* ---- overlays (compare + history) ---- */
-  .overlay { position: fixed; inset: 0; background: #0c0d10ee; z-index: 50;
-    display: none; flex-direction: column; padding: 18px; }
+  .pane { position: relative; display: flex; flex-direction: column;
+    min-width: 0; min-height: 0; background: var(--term); }
+  .pane-head { display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px; background: var(--bg1);
+    border-bottom: 1px solid var(--line); font-size: 11px; user-select: none; }
+  .pane-head .dot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+    box-shadow: 0 0 7px currentColor; background: currentColor; }
+  .pane-head .dot.tx { animation: tx .5s ease 3; }
+  @keyframes tx { 50% { box-shadow: 0 0 12px 2px currentColor; transform: scale(1.25); } }
+  .pane.dead .dot { color: var(--bad) !important; animation: none; }
+  .pane-head select.cli { background: none; border: none; font: inherit; font-size: 11px;
+    font-weight: 700; letter-spacing: 1.5px; cursor: pointer; outline: none; appearance: none; padding-right: 2px; }
+  .pane-head select.cli option { background: var(--bg1); color: var(--text); font-weight: 400; letter-spacing: 0; }
+  .pane-head .inst { color: var(--dim); font-size: 10px; }
+  .pane-head .key { color: var(--faint); font-size: 9px; border: 1px solid var(--line);
+    border-radius: 3px; padding: 0 4px; }
+  .pane-head select.opt, .pane-head select.relay { background: var(--bg2); border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 10px; border-radius: 4px;
+    padding: 2px 4px; cursor: pointer; outline: none; max-width: 110px; }
+  .pane-head select.opt:hover, .pane-head select.relay:hover { color: var(--text); border-color: var(--line2); }
+  .pane-head .spacer { flex: 1; }
+  .pane-head .ctl { display: flex; align-items: center; gap: 4px; opacity: .5; transition: opacity .15s; }
+  .pane:hover .pane-head .ctl, .pane.focused .pane-head .ctl { opacity: 1; }
+  .pane-head button { display: flex; align-items: center; gap: 4px; background: none;
+    border: 1px solid var(--line); color: var(--dim); font: inherit; font-size: 10px;
+    border-radius: 4px; padding: 2px 6px; cursor: pointer; }
+  .pane-head button svg.i { width: 11px; height: 11px; }
+  .pane-head button:hover { color: var(--text); border-color: var(--line2); }
+  .pane-head button.bc.on { color: var(--amber); border-color: var(--amber); }
+  .pane-head button.yolo.on { color: var(--amber); border-color: var(--amber); background: var(--amber-soft); }
+  .pane-head button.x:hover { color: var(--bad); border-color: var(--bad); }
+  .pane.focused .pane-head { box-shadow: inset 0 -2px 0 var(--amber); }
+  .pane.dropping { outline: 2px dashed var(--amber); outline-offset: -3px; }
+  .term { flex: 1; min-height: 0; padding: 5px 0 5px 7px; }
+
+  .dead-cover { position: absolute; inset: 30px 0 0 0; z-index: 6; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 12px;
+    background: #0e1116d9; backdrop-filter: blur(1.5px); }
+  .pane.dead .dead-cover { display: flex; }
+  .dead-cover .msg { color: var(--dim); font-size: 12px; }
+  .dead-cover button { display: flex; align-items: center; gap: 7px;
+    background: var(--bg2); border: 1px solid var(--line2); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 7px; padding: 8px 16px; cursor: pointer; }
+  .dead-cover button:hover { border-color: var(--amber); color: var(--amber); }
+
+  /* ================= overlays ================= */
+  .overlay { position: fixed; inset: 0; background: #07080adc; z-index: 50;
+    display: none; flex-direction: column; padding: 20px; backdrop-filter: blur(2px); }
   .overlay.open { display: flex; }
-  .ov-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
-  .ov-head h2 { font-size: 15px; color: var(--accent); }
+  .ov-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .ov-head h2 { display: flex; align-items: center; gap: 8px; font-size: 13px;
+    letter-spacing: 2px; color: var(--amber); text-transform: uppercase; }
   .ov-head .ov-prompt { color: var(--dim); font-size: 12px; flex: 1;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ov-head button { background: var(--bg-panel); border: 1px solid var(--border); color: var(--text);
-    font: inherit; font-size: 12px; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
-  .ov-head button:hover { border-color: var(--accent); }
+  .ov-head button { display: flex; align-items: center; gap: 6px;
+    background: var(--bg2); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+  .ov-head button:hover { border-color: var(--amber); }
+
   /* ---- compare ---- */
-  #cmpPromptBox { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px;
-    padding: 10px 14px; margin-bottom: 14px; font-size: 13px; color: var(--text); }
-  #cmpPromptBox .q { color: var(--dim); font-size: 11px; letter-spacing: 1px; margin-right: 8px; }
+  #cmpPromptBox { background: var(--bg1); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+  #cmpPromptBox .q { color: var(--faint); font-size: 10px; letter-spacing: 1.5px; margin-right: 10px; }
   #cmpCols { flex: 1; display: grid; gap: 14px; min-height: 0; }
   .cmp-col { display: flex; flex-direction: column; min-width: 0; min-height: 0;
-    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
-    border-top: 3px solid var(--border); overflow: hidden; }
+    background: var(--bg1); border: 1px solid var(--line); border-radius: 10px;
+    border-top: 3px solid var(--line); overflow: hidden; }
   .cmp-col .col-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
-    font-weight: 700; letter-spacing: 1px; font-size: 13px; }
-  .cmp-col .col-head .wins { color: var(--dim); font-weight: 400; font-size: 11px; }
+    font-weight: 700; letter-spacing: 1.5px; font-size: 12px; }
+  .cmp-col .col-head .wins { color: var(--dim); font-weight: 400; font-size: 10px; letter-spacing: 0; }
   .cmp-col .col-head .spacer { flex: 1; }
-  .cmp-col .col-head button { background: none; border: 1px solid var(--border); color: var(--dim);
-    font: inherit; font-size: 11px; border-radius: 5px; padding: 3px 10px; cursor: pointer; }
-  .cmp-col .col-head button:hover { color: var(--text); border-color: var(--dim); }
+  .cmp-col .col-head button { display: flex; align-items: center; gap: 5px;
+    background: none; border: 1px solid var(--line); color: var(--dim);
+    font: inherit; font-size: 11px; border-radius: 5px; padding: 3px 9px; cursor: pointer; }
+  .cmp-col .col-head button svg.i { width: 11px; height: 11px; }
+  .cmp-col .col-head button:hover { color: var(--text); border-color: var(--line2); }
   .cmp-col .col-head button.win:hover { color: var(--ok); border-color: var(--ok); }
   .cmp-col.winner { border-color: var(--ok); border-top-color: var(--ok); }
   .cmp-body { flex: 1; overflow: auto; padding: 4px 16px 14px; font-size: 13px;
-    white-space: pre-wrap; word-break: break-word; color: var(--text); line-height: 1.6; }
+    white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
   #verdict { display: none; max-height: 38%; overflow: auto; margin-top: 14px;
-    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 10px;
+    background: var(--bg1); border: 1px solid var(--amber); border-radius: 10px;
     padding: 14px 16px; font-size: 13px; white-space: pre-wrap; line-height: 1.6; }
   #verdict.open { display: block; }
+  #verdict .v-head { display: flex; align-items: center; gap: 8px; color: var(--amber);
+    font-size: 11px; letter-spacing: 2px; font-weight: 700; margin-bottom: 8px; white-space: normal; }
 
+  /* ---- history ---- */
+  #histSearch { background: var(--bg0); border: 1px solid var(--line); color: var(--text);
+    font: inherit; font-size: 12px; border-radius: 6px; padding: 8px 12px;
+    outline: none; margin-bottom: 10px; }
+  #histSearch:focus { border-color: var(--amber); }
   #histList { flex: 1; overflow: auto; }
   #histList .h-item { display: flex; align-items: center; gap: 10px;
-    padding: 9px 12px; border-bottom: 1px solid var(--border);
-    cursor: pointer; font-size: 13px; }
-  #histList .h-item:hover { background: var(--bg-panel); color: var(--accent); }
-  #histList .h-item .h-ts { color: var(--dim); font-size: 11px; flex: none; }
+    padding: 9px 12px; border-bottom: 1px solid var(--line);
+    cursor: pointer; font-size: 13px; border-radius: 6px; }
+  #histList .h-item:hover { background: var(--bg1); color: var(--amber); }
+  #histList .h-item .h-ts { color: var(--faint); font-size: 11px; flex: none; }
   #histList .h-item .h-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #histList .h-item .h-del { flex: none; background: none; border: 1px solid var(--border);
-    color: var(--dim); font: inherit; font-size: 12px; border-radius: 4px;
-    padding: 0 8px; cursor: pointer; }
+  #histList .h-item .h-del { flex: none; display: flex; background: none; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 4px; padding: 3px 6px; cursor: pointer; }
   #histList .h-item .h-del:hover { color: var(--bad); border-color: var(--bad); }
 
-  .toast { position: fixed; bottom: 16px; right: 16px; z-index: 60;
-    background: var(--bg-panel); border: 1px solid var(--accent); border-radius: 8px;
-    padding: 10px 14px; font-size: 12px; display: none; }
-  .toast.open { display: block; }
+  /* ---- shortcuts help ---- */
+  #helpBox { max-width: 560px; margin: 0 auto; width: 100%; }
+  #helpBox table { width: 100%; border-collapse: collapse; }
+  #helpBox td { padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+  #helpBox td:first-child { width: 190px; }
+  #helpBox kbd { background: var(--bg2); border: 1px solid var(--line2); border-radius: 4px;
+    padding: 2px 7px; font-size: 11px; color: var(--text); }
+  #helpBox td.d { color: var(--dim); }
+
+  /* ---- toasts + banner ---- */
+  #toasts { position: fixed; bottom: 16px; right: 16px; z-index: 70;
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .toast { display: flex; align-items: center; gap: 9px; max-width: 420px;
+    background: var(--bg1); border: 1px solid var(--line2); border-left: 3px solid var(--amber);
+    border-radius: 8px; padding: 10px 14px; font-size: 12px;
+    box-shadow: 0 10px 30px -8px #000a; animation: rise .18s ease; }
+  .toast svg.i { color: var(--amber); }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+
+  #reconnect { position: fixed; top: 0; left: 0; right: 0; z-index: 80; display: none;
+    align-items: center; justify-content: center; gap: 9px;
+    background: var(--bad); color: #fff; font-size: 12px; padding: 7px; }
+  #reconnect.open { display: flex; }
+  #reconnect svg.i { animation: spin 1.6s linear infinite; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="promptbar">
-    <span class="sigil">vibe&gt;</span>
-    <input id="prompt" placeholder="type once, send to the whole deck… (Enter · ↑↓ history · Ctrl+0 here)" autofocus spellcheck="false">
-    <select id="paneCount" title="how many panes (meter lives in the sidebar, not a pane)">
-      <option value="1">1 pane</option><option value="2">2 panes</option>
-      <option value="3">3 panes</option><option value="4">4 panes</option>
-    </select>
-    <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook ▾</option></select>
-    <select id="pipeline" title="type a prompt, then pick a chain — each step's answer feeds the next pane (edit pipelines/*.json)"><option value="">pipeline ▾</option></select>
-    <span id="pipeChip"><span class="pc-text"></span><button class="pc-x" title="cancel pipeline (current pane keeps running)">&times;</button></span>
-    <button id="meterBtn" title="toggle the token meter sidebar (today's usage + api-rate cost)">⛽ meter</button>
-    <button id="modelsBtn" title="refresh model lists from the CLIs (grok live, claude/codex via their /model menu)">⟳ models</button>
-    <button id="cmpBtn" title="see each model's answer to the last broadcast side by side">compare</button>
-    <button id="histBtn" title="prompt history">history</button>
-  </div>
+  <header id="deck">
+    <div class="brand"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="5.4" height="16" rx="1"/><rect x="9.9" y="4" width="5.4" height="16" rx="1"/><rect x="16.8" y="4" width="5.4" height="16" rx="1"/></svg>VIBEDECK</div>
+    <button id="cwdBtn" title="project folder — every pane runs here">
+      <svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span class="nm">…</span>
+      <svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <div class="promptwrap">
+      <span class="sigil">vibe&gt;</span>
+      <input id="prompt" placeholder="type once, send to the whole deck" autofocus spellcheck="false">
+      <kbd>Ctrl+0</kbd>
+    </div>
+    <div class="selwrap">
+      <select id="paneCount" title="how many panes">
+        <option value="1">1 pane</option><option value="2">2 panes</option>
+        <option value="3">3 panes</option><option value="4">4 panes</option>
+      </select>
+      <svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </div>
+    <div class="selwrap">
+      <svg class="i" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      <select id="playbook" title="starter prompts — edit playbooks/*.md"><option value="">playbook</option></select>
+      <svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </div>
+    <div class="selwrap">
+      <svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      <select id="pipeline" title="type a prompt, then pick a chain — each step's answer feeds the next pane"><option value="">pipeline</option></select>
+      <svg class="i chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </div>
+    <span id="pipeChip"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-9-9"/></svg><span class="pc-text"></span><button class="pc-x" title="cancel pipeline (current pane keeps running)">&times;</button></span>
+    <div class="tools">
+      <button id="meterBtn" class="tbtn" title="token meter — today's usage + api-rate cost">
+        <svg class="i" viewBox="0 0 24 24"><path d="M12 15l4-6"/><path d="M4 17.5a9 9 0 1 1 16 0"/></svg>meter</button>
+      <button id="cmpBtn" class="tbtn" title="each model's answer to the last broadcast, side by side">
+        <svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/></svg>compare</button>
+      <button id="histBtn" class="tbtn" title="prompt history">
+        <svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>history</button>
+      <button id="modelsBtn" class="tbtn icon-only" title="refresh model lists from the CLIs">
+        <svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg></button>
+      <button id="helpBtn" class="tbtn icon-only" title="keyboard shortcuts">
+        <svg class="i" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg></button>
+    </div>
+  </header>
   <div id="main">
     <div id="panes"></div>
     <div id="meterbar"><iframe id="meterframe"></iframe></div>
   </div>
 </div>
 
+<div id="cwdPanel">
+  <div class="lb">Project folder</div>
+  <div class="cur" id="cwdCur"></div>
+  <div class="row">
+    <input id="cwdInput" placeholder="C:\path\to\your\project" spellcheck="false">
+    <button id="cwdGo">Switch</button>
+  </div>
+  <div class="lb">Recent folders</div>
+  <div id="cwdRecents"></div>
+  <div class="note">Switching relaunches every pane in the new folder — running sessions end.</div>
+</div>
+
 <div class="overlay" id="cmpOverlay">
   <div class="ov-head">
-    <h2>compare</h2>
+    <h2><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/></svg>Compare</h2>
     <span class="ov-prompt"></span>
-    <button id="judgeBtn" title="an AI judge picks a winner and merges the best ideas">⚖ judge</button>
-    <button id="cmpClose">close (esc)</button>
+    <button id="judgeBtn" title="an AI judge picks a winner and merges the best ideas">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M19 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M8 21h8"/></svg>judge</button>
+    <button id="cmpClose">close <kbd style="font-size:10px">esc</kbd></button>
   </div>
   <div id="cmpPromptBox"><span class="q">YOU ASKED</span><span id="cmpPrompt"></span></div>
   <div id="cmpCols"></div>
@@ -175,45 +342,79 @@
 
 <div class="overlay" id="histOverlay">
   <div class="ov-head">
-    <h2>prompt history</h2>
-    <span class="ov-prompt">click to load into the bar</span>
-    <button id="histClose">close (esc)</button>
+    <h2><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>History</h2>
+    <span class="ov-prompt">click a prompt to load it into the bar</span>
+    <button id="histClose">close <kbd style="font-size:10px">esc</kbd></button>
   </div>
+  <input id="histSearch" placeholder="filter prompts" spellcheck="false">
   <div id="histList"></div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="overlay" id="helpOverlay">
+  <div class="ov-head">
+    <h2><svg class="i" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>Shortcuts</h2>
+    <span class="ov-prompt"></span>
+    <button id="helpClose">close <kbd style="font-size:10px">esc</kbd></button>
+  </div>
+  <div id="helpBox">
+    <table>
+      <tr><td><kbd>Enter</kbd></td><td class="d">broadcast the prompt to every pane marked <b>bcast</b></td></tr>
+      <tr><td><kbd>&uarr;</kbd> / <kbd>&darr;</kbd></td><td class="d">cycle prompt history in the bar</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>0</kbd></td><td class="d">jump back to the prompt bar</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>1</kbd>&hellip;<kbd>4</kbd></td><td class="d">focus pane 1&ndash;4</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td class="d">close overlays here &middot; interrupts the CLI inside a pane</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd> / drop</td><td class="d">paste or drop an image onto a pane &mdash; its path is typed into that CLI</td></tr>
+      <tr><td>drag divider</td><td class="d">resize panes &middot; double-click resets</td></tr>
+    </table>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<div id="reconnect"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>server disconnected — restart VibeDeck, this page will reconnect itself</div>
 
 <script src="/vendor/xterm/lib/xterm.js"></script>
 <script src="/vendor/addon-fit/lib/addon-fit.js"></script>
 <script src="/vendor/addon-webgl/lib/addon-webgl.js"></script>
 <script>
-const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9ca3af', shell: '#7aa2f7' };
-// Per-kind dropdowns. Choices live in models.json on the server (⟳ refreshes them).
+const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9aa2af', shell: '#7aa2f7' };
+// Per-kind dropdowns. Choices live in models.json on the server (refresh pulls them).
 // mode 'slash':    types the slash command into the running session (no restart)
 // mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
 const KNOBS = {
   claude: [
-    { mode: 'slash', cmd: '/model',  placeholder: 'model ▾',  list: 'models' },
-    { mode: 'slash', cmd: '/effort', placeholder: 'effort ▾', list: 'efforts' },
+    { mode: 'slash', cmd: '/model',  placeholder: 'model', list: 'models' },
+    { mode: 'slash', cmd: '/effort', placeholder: 'effort', list: 'efforts' },
   ],
   codex: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾', list: 'models' },
-    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort ▾', list: 'efforts' },
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model', list: 'models' },
+    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort', list: 'efforts' },
   ],
   grok: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model ▾', list: 'models' },
-    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort ▾', list: 'efforts' },
+    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model', list: 'models' },
+    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort', list: 'efforts' },
   ],
   shell: [],
 };
 let modelsCfg = {}; // kind -> { models: [], efforts: [] }, from the server
 const choicesFor = (kind, knob) => knob.choices || (modelsCfg[kind] || {})[knob.list] || [];
-const THEME = { background: '#16181d', foreground: '#d8dee9', cursor: '#7aa2f7', selectionBackground: '#33415580' };
+const THEME = { background: '#0e1116', foreground: '#dce3ee', cursor: '#e8b45a', selectionBackground: '#33415580' };
+
+const ICONS = {
+  restart: '<svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>',
+  image: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+  send: '<svg class="i" viewBox="0 0 24 24"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg>',
+  info: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg>',
+  copy: '<svg class="i" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+  award: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="9" r="6"/><path d="M8.5 14L7 22l5-3 5 3-1.5-8"/></svg>',
+  scale: '<svg class="i" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M19 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M8 21h8"/></svg>',
+  folder: '<svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  chain: '<svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
+};
 
 const ws = new WebSocket(`ws://${location.host}`);
 const panes = new Map(); // instance id -> pane object (insertion order = layout order)
 let roster = [], maxPanes = 4, history = [], histIdx = -1, playbooks = [], pipelines = [];
+let cwd = '', recents = [];
 const $ = id => document.getElementById(id);
 const promptEl = $('prompt'), panesEl = $('panes'), paneCountEl = $('paneCount');
 
@@ -223,13 +424,13 @@ function stripAnsi(s) {
   return s.replace(/\x1b\[[0-9;?<>=]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
           .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
 }
-let toastTimer;
-function toast(text) {
-  const t = $('toast');
-  t.textContent = text;
-  t.classList.add('open');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('open'), 2500);
+function toast(text, icon) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.innerHTML = (ICONS[icon] || ICONS.info);
+  t.appendChild(Object.assign(document.createElement('span'), { textContent: text }));
+  $('toasts').appendChild(t);
+  setTimeout(() => t.remove(), 3200);
 }
 
 // staged writes: a single "/model x" paste-chunk makes the slash menu
@@ -245,21 +446,27 @@ function buildPane(info) {
   el.className = 'pane';
   el.innerHTML = `
     <div class="pane-head">
-      <span class="dot" style="background:${color(info.kind)}"></span>
+      <span class="dot" style="color:${color(info.kind)}"></span>
       <select class="cli" title="change this pane's CLI (new session)"></select>
       <span class="inst"></span>
       <span class="knobs"></span>
       <button class="yolo" title="skip permissions (dangerous) — toggling restarts this CLI">yolo</button>
       <span class="key"></span>
       <span class="spacer"></span>
-      <select class="relay" title="send this pane's last answer to another pane"><option value="">→ relay ▾</option></select>
-      <button class="mv left" title="move pane left">&#9664;</button>
-      <button class="mv right" title="move pane right">&#9654;</button>
-      <button class="bc on" title="include in broadcast">bcast</button>
-      <button class="rs" title="restart CLI">restart</button>
-      <button class="x" title="close pane (kills this CLI)">&times;</button>
+      <span class="ctl">
+        <select class="relay" title="send this pane's last answer to another pane"><option value="">relay to</option></select>
+        <button class="mv left" title="move pane left"><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <button class="mv right" title="move pane right"><svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+        <button class="bc on" title="include in broadcast">bcast</button>
+        <button class="rs" title="restart CLI">${ICONS.restart}</button>
+        <button class="x" title="close pane (kills this CLI)"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </span>
     </div>
-    <div class="term"></div>`;
+    <div class="term"></div>
+    <div class="dead-cover">
+      <span class="msg">session exited</span>
+      <button class="dead-rs">${ICONS.restart}restart ${(info.label || '').toLowerCase()}</button>
+    </div>`;
   panesEl.appendChild(el);
 
   const term = new Terminal({
@@ -384,7 +591,9 @@ function buildPane(info) {
     pane.broadcast = !pane.broadcast;
     bcBtn.classList.toggle('on', pane.broadcast);
   });
-  el.querySelector('.rs').addEventListener('click', () => send({ type: 'restart', pane: info.id }));
+  const doRestart = () => send({ type: 'restart', pane: info.id });
+  el.querySelector('.rs').addEventListener('click', doRestart);
+  el.querySelector('.dead-rs').addEventListener('click', doRestart);
   el.querySelector('.x').addEventListener('click', () => {
     if (panes.size > 1) send({ type: 'close', pane: info.id });
   });
@@ -411,7 +620,7 @@ function applyOrder(order) {
   relayout();
 }
 
-function paneTitle(p, i) {
+function paneTitle(p) {
   const dupes = [...panes.values()].filter(x => x.kind === p.kind);
   const n = dupes.indexOf(p) + 1;
   return p.label + (dupes.length > 1 ? ` #${n}` : '');
@@ -495,8 +704,8 @@ function relayout() {
     p.el.querySelector('.inst').textContent = kindCounts[p.kind] > 1 ? `#${kindSeen[p.kind]}` : '';
     // rebuild relay targets (all other panes)
     const relaySel = p.el.querySelector('.relay');
-    relaySel.innerHTML = '<option value="">→ relay ▾</option>' + all.filter(x => x !== p)
-      .map(x => `<option value="${x.id}">→ ${paneTitle(x)}</option>`).join('');
+    relaySel.innerHTML = '<option value="">relay to</option>' + all.filter(x => x !== p)
+      .map(x => `<option value="${x.id}">${paneTitle(x)}</option>`).join('');
   });
   paneCountEl.value = String(n);
   setTimeout(fitAll, 50);
@@ -523,6 +732,7 @@ ws.onmessage = (ev) => {
     history = msg.history || []; playbooks = msg.playbooks || [];
     pipelines = msg.pipelines || [];
     modelsCfg = msg.models || {};
+    setCwd(msg.cwd || '', msg.recents || []);
     setPlaybooks();
     setPipelines();
     if (!panes.size) msg.panes.forEach(p => buildPane(p));
@@ -561,20 +771,26 @@ ws.onmessage = (ev) => {
     }
   } else if (msg.type === 'imageSaved') {
     const p = panes.get(msg.pane);
-    toast(`🖼 ${msg.file} → ${p ? paneTitle(p) : msg.pane} (path typed into its input)`);
+    toast(`${msg.file} sent to ${p ? paneTitle(p) : msg.pane} — path typed into its input`, 'image');
   } else if (msg.type === 'relayed') {
     const from = panes.get(msg.from), to = panes.get(msg.to);
-    toast(`relayed ${from ? paneTitle(from) : '?'} → ${to ? paneTitle(to) : '?'}`);
+    toast(`relayed ${from ? paneTitle(from) : '?'} to ${to ? paneTitle(to) : '?'}`, 'send');
+  } else if (msg.type === 'roundStarted') {
+    (msg.targets || []).forEach(id => {
+      const dot = panes.get(id)?.el.querySelector('.dot');
+      if (dot) { dot.classList.remove('tx'); void dot.offsetWidth; dot.classList.add('tx'); }
+    });
   } else if (msg.type === 'round') {
     renderCompare(msg);
   } else if (msg.type === 'judging') {
     const v = $('verdict');
     v.classList.add('open');
-    v.textContent = '⚖ the judge is reading all the answers… (can take a minute)';
+    v.innerHTML = `<div class="v-head">${ICONS.scale}JUDGE</div>reading all the answers… (can take a minute)`;
   } else if (msg.type === 'judgement') {
     const v = $('verdict');
     v.classList.add('open');
-    v.textContent = msg.text;
+    v.innerHTML = `<div class="v-head">${ICONS.scale}VERDICT</div>`;
+    v.appendChild(Object.assign(document.createElement('span'), { textContent: msg.text }));
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || [];
     setPlaybooks();
@@ -582,29 +798,78 @@ ws.onmessage = (ev) => {
     pipelines = msg.items || [];
     setPipelines();
   } else if (msg.type === 'modelsUpdating') {
-    toast('⟳ refreshing model lists… (watch the /model menus flash)');
+    toast('refreshing model lists — watch the /model menus flash', 'restart');
   } else if (msg.type === 'models') {
     modelsCfg = msg.config || {};
     repopulateKnobs();
     toast(`models: ${msg.report}`);
+  } else if (msg.type === 'cwdChanged') {
+    setCwd(msg.cwd, msg.recents || recents);
+    $('cwdPanel').classList.remove('open');
+    $('cwdBtn').classList.remove('open');
+    toast(`deck relaunched in ${msg.cwd}`, 'folder');
+  } else if (msg.type === 'cwdError') {
+    toast(msg.text || 'that folder does not exist', 'folder');
   } else if (msg.type === 'pipeline') {
     const chip = $('pipeChip');
     if (msg.state === 'step') {
       chip.classList.add('on');
-      chip.querySelector('.pc-text').textContent = `⛓ ${msg.name} · ${msg.step + 1}/${msg.total} · ${msg.label}`;
+      chip.querySelector('.pc-text').textContent = `${msg.name} · ${msg.step + 1}/${msg.total} · ${msg.label}`;
     } else {
       chip.classList.remove('on');
-      if (msg.state === 'done') toast(`⛓ ${msg.name} — done. Last pane has the final answer (compare shows the last step).`);
-      else toast(`⛓ ${msg.name} — ${msg.state}${msg.text ? ': ' + msg.text : ''}`);
+      if (msg.state === 'done') toast(`${msg.name} — done. Last pane has the final answer.`, 'chain');
+      else toast(`${msg.name} — ${msg.state}${msg.text ? ': ' + msg.text : ''}`, 'chain');
     }
   }
 };
-ws.onclose = () => panes.forEach(p => p.term?.write('\r\n\x1b[31m[server disconnected — restart VibeDeck and reload]\x1b[0m\r\n'));
+ws.onclose = () => {
+  $('reconnect').classList.add('open');
+  panes.forEach(p => p.term?.write('\r\n\x1b[31m[server disconnected]\x1b[0m\r\n'));
+  const retry = setInterval(async () => {
+    try { await fetch('/', { cache: 'no-store' }); clearInterval(retry); location.reload(); } catch {}
+  }, 2000);
+};
+
+// ---------- project folder ----------
+function setCwd(dir, rec) {
+  cwd = dir; recents = rec;
+  const parts = dir.split(/[\\/]/).filter(Boolean);
+  $('cwdBtn').querySelector('.nm').textContent = parts[parts.length - 1] || dir || '—';
+  $('cwdBtn').title = `project folder — ${dir}`;
+  $('cwdCur').textContent = dir;
+  $('cwdRecents').innerHTML = '';
+  recents.filter(r => r !== dir).slice(0, 7).forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'r-item';
+    d.innerHTML = ICONS.folder + '<span class="p"></span>';
+    d.querySelector('.p').textContent = r;
+    d.addEventListener('click', () => send({ type: 'setcwd', dir: r }));
+    $('cwdRecents').appendChild(d);
+  });
+  if (!recents.filter(r => r !== dir).length)
+    $('cwdRecents').innerHTML = '<div class="r-item" style="cursor:default;color:var(--faint)">no other folders yet</div>';
+}
+$('cwdBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = !$('cwdPanel').classList.contains('open');
+  $('cwdPanel').classList.toggle('open', open);
+  $('cwdBtn').classList.toggle('open', open);
+  if (open) { $('cwdInput').value = ''; $('cwdInput').focus(); }
+});
+document.addEventListener('click', (e) => {
+  if (!$('cwdPanel').contains(e.target) && e.target !== $('cwdBtn')) {
+    $('cwdPanel').classList.remove('open');
+    $('cwdBtn').classList.remove('open');
+  }
+});
+const goCwd = () => { const d = $('cwdInput').value.trim(); if (d) send({ type: 'setcwd', dir: d }); };
+$('cwdGo').addEventListener('click', goCwd);
+$('cwdInput').addEventListener('keydown', e => { if (e.key === 'Enter') goCwd(); });
 
 // ---------- playbooks ----------
 const playbookEl = $('playbook');
 function setPlaybooks() {
-  playbookEl.innerHTML = '<option value="">playbook ▾</option>'
+  playbookEl.innerHTML = '<option value="">playbook</option>'
     + playbooks.map((p, i) => `<option value="${i}">${p.name}</option>`).join('');
 }
 playbookEl.addEventListener('change', () => {
@@ -618,8 +883,8 @@ playbookEl.addEventListener('change', () => {
 playbookEl.addEventListener('mousedown', () => send({ type: 'playbooks' }));
 
 // ---------- meter sidebar (far right, toggleable, remembered) ----------
-const meterBar = $('meterbar') || document.getElementById('meterbar');
-const meterFrame = document.getElementById('meterframe');
+const meterBar = $('meterbar');
+const meterFrame = $('meterframe');
 function setMeter(open) {
   if (open && !meterFrame.src) meterFrame.src = '/meter'; // lazy-load: no polling while closed
   meterBar.classList.toggle('open', open);
@@ -644,15 +909,15 @@ $('modelsBtn').addEventListener('click', () => send({ type: 'updateModels' }));
 // ---------- pipelines ----------
 const pipelineEl = $('pipeline');
 function setPipelines() {
-  pipelineEl.innerHTML = '<option value="">pipeline ▾</option>'
-    + pipelines.map((p, i) => `<option value="${i}">⛓ ${p.name} (${p.steps.join(' → ')})</option>`).join('');
+  pipelineEl.innerHTML = '<option value="">pipeline</option>'
+    + pipelines.map((p, i) => `<option value="${i}">${p.name} (${p.steps.join(' → ')})</option>`).join('');
 }
 pipelineEl.addEventListener('change', () => {
   const p = pipelines[Number(pipelineEl.value)];
   pipelineEl.value = '';
   if (!p) return;
   const prompt = promptEl.value.trim();
-  if (!prompt) { toast('type a prompt first, then pick a pipeline'); promptEl.focus(); return; }
+  if (!prompt) { toast('type a prompt first, then pick a pipeline', 'chain'); promptEl.focus(); return; }
   send({ type: 'pipeline', name: p.name, prompt });
   history.push({ ts: Date.now(), text: prompt });
   histIdx = -1;
@@ -662,15 +927,17 @@ pipelineEl.addEventListener('mousedown', () => send({ type: 'pipelines' }));
 $('pipeChip').querySelector('.pc-x').addEventListener('click', () => send({ type: 'pipelineCancel' }));
 
 // ---------- history ----------
-function renderHistory() {
+function renderHistory(filter) {
   const list = $('histList');
   list.innerHTML = '';
-  [...history].reverse().forEach(h => {
+  const f = (filter || '').toLowerCase();
+  const items = [...history].reverse().filter(h => !f || h.text.toLowerCase().includes(f));
+  items.forEach(h => {
     const d = document.createElement('div');
     d.className = 'h-item';
     const ts = new Date(h.ts);
     const when = `${ts.getMonth() + 1}/${ts.getDate()} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}`;
-    d.innerHTML = `<span class="h-ts">${when}</span><span class="h-text"></span><button class="h-del" title="delete">&times;</button>`;
+    d.innerHTML = `<span class="h-ts">${when}</span><span class="h-text"></span><button class="h-del" title="delete"><svg class="i" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>`;
     d.querySelector('.h-text').textContent = h.text;
     d.addEventListener('click', () => {
       promptEl.value = h.text;
@@ -685,13 +952,20 @@ function renderHistory() {
     });
     list.appendChild(d);
   });
-  if (!history.length) list.innerHTML = '<div class="h-item">no prompts yet</div>';
+  if (!items.length) list.innerHTML = `<div class="h-item" style="cursor:default;color:var(--faint)">${f ? 'nothing matches' : 'no prompts yet — broadcast something'}</div>`;
 }
 $('histBtn').addEventListener('click', () => {
+  $('histSearch').value = '';
   renderHistory();
   $('histOverlay').classList.add('open');
+  $('histSearch').focus();
 });
+$('histSearch').addEventListener('input', () => renderHistory($('histSearch').value));
 $('histClose').addEventListener('click', () => $('histOverlay').classList.remove('open'));
+
+// ---------- shortcuts help ----------
+$('helpBtn').addEventListener('click', () => $('helpOverlay').classList.add('open'));
+$('helpClose').addEventListener('click', () => $('helpOverlay').classList.remove('open'));
 
 // ---------- compare + judge ----------
 const WINS_KEY = 'vibedeck-wins';
@@ -719,15 +993,16 @@ function renderCompare(round) {
       <div class="col-head" style="color:${color(r.kind)}">
         ${r.label}<span class="wins">${wins[r.kind] ? wins[r.kind] + ' wins' : ''}</span>
         <span class="spacer"></span>
-        <button class="copy">copy</button>
-        <button class="win">winner 🏆</button>
+        <button class="copy">${ICONS.copy}copy</button>
+        <button class="win">${ICONS.award}winner</button>
       </div>
       <div class="cmp-body"></div>`;
     col.querySelector('.cmp-body').textContent = r.text;
     col.querySelector('.copy').addEventListener('click', (e) => {
       navigator.clipboard.writeText(r.text);
-      e.target.textContent = 'copied ✓';
-      setTimeout(() => e.target.textContent = 'copy', 1500);
+      const b = e.currentTarget;
+      b.childNodes[b.childNodes.length - 1].textContent = 'copied';
+      setTimeout(() => b.childNodes[b.childNodes.length - 1].textContent = 'copy', 1500);
     });
     col.querySelector('.win').addEventListener('click', () => {
       const w = getWins();
@@ -766,7 +1041,7 @@ promptEl.addEventListener('keydown', (e) => {
 // ---------- terminal plumbing ----------
 function fitAll() {
   panes.forEach(p => {
-    if (!p.term) return; // meter iframes size themselves
+    if (!p.term) return;
     try {
       p.fit.fit();
       send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows });
@@ -793,8 +1068,14 @@ new ResizeObserver(() => {
 // global shortcuts
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if ($('cmpOverlay').classList.contains('open')) { $('cmpOverlay').classList.remove('open'); return; }
-    if ($('histOverlay').classList.contains('open')) { $('histOverlay').classList.remove('open'); return; }
+    for (const id of ['cmpOverlay', 'histOverlay', 'helpOverlay']) {
+      if ($(id).classList.contains('open')) { $(id).classList.remove('open'); return; }
+    }
+    if ($('cwdPanel').classList.contains('open')) {
+      $('cwdPanel').classList.remove('open');
+      $('cwdBtn').classList.remove('open');
+      return;
+    }
   }
   if (e.ctrlKey && ['1', '2', '3', '4'].includes(e.key)) {
     e.preventDefault();

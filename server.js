@@ -28,7 +28,7 @@ const NPM_BIN = path.join(process.env.APPDATA || '', 'npm');
 const ROSTER = [
   { id: 'claude', label: 'CLAUDE', cmd: path.join(NPM_BIN, 'claude.cmd'), flags: '--dangerously-skip-permissions', ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
   { id: 'codex',  label: 'CODEX',  cmd: path.join(NPM_BIN, 'codex.cmd'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
-  { id: 'grok',   label: 'GROK',   cmd: 'C:\\Users\\Derek\\.grok\\bin\\grok.exe', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
+  { id: 'grok',   label: 'GROK',   cmd: path.join(HOME, '.grok', 'bin', 'grok.exe'), flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: 'powershell -NoLogo', ready: /PS .*>/ },
 ];
 const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
@@ -591,7 +591,8 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'setcwd') {
       let dir = String(msg.dir || '').trim().replace(/^"|"$/g, '');
       if (!dir) return;
-      try { if (!fs.statSync(dir).isDirectory()) return; } catch { return; }
+      try { if (!fs.statSync(dir).isDirectory()) throw 0; }
+      catch { return ws.send(JSON.stringify({ type: 'cwdError', text: `not a folder: ${dir}` })); }
       dir = path.resolve(dir);
       state.cwd = dir;
       state.recents = [dir, ...state.recents.filter(r => r.toLowerCase() !== dir.toLowerCase())].slice(0, 8);
