@@ -168,10 +168,12 @@
   .note-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term); }
   .note-lb { flex: none; font-size: 9px; letter-spacing: 1.5px; color: var(--faint); text-transform: uppercase;
     padding: 9px 14px 3px; user-select: none; }
-  .note-area { height: 88px; flex: none; resize: none; background: none; color: var(--text);
-    border: none; border-bottom: 1px solid var(--line); outline: none; padding: 2px 14px 10px;
+  .note-area { height: 150px; flex: none; resize: none; background: none; color: var(--text);
+    border: none; outline: none; padding: 2px 14px 10px;
     font: inherit; font-size: 13px; line-height: 1.6; caret-color: var(--amber); }
   .note-area::placeholder { color: var(--faint); }
+  .note-split { flex: none; height: 6px; background: var(--line); cursor: row-resize; }
+  .note-split:hover, .note-split.active { background: var(--amber); }
   .note-cards { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 12px; }
   .ncard { border: 1px solid var(--line); border-radius: 8px; background: var(--bg1); margin-top: 8px; overflow: hidden; }
   .ncard-head { display: flex; align-items: center; gap: 8px; padding: 9px 11px; cursor: pointer; user-select: none; }
@@ -552,6 +554,7 @@ function buildPane(info) {
       ? `<div class="note-wrap">
            <div class="note-lb">scratch — autosaves</div>
            <textarea class="note-area" spellcheck="false" placeholder="type anything here"></textarea>
+           <div class="note-split" title="drag to resize the scratch pad · double-click to reset"></div>
            <div class="note-cards"></div>
          </div>`
       : '<div class="term"></div>'}
@@ -576,6 +579,32 @@ function buildPane(info) {
       el.classList.add('focused');
     });
     ta.addEventListener('blur', () => el.classList.remove('focused'));
+    // scratch/cards divider: drag up-down, remembered; double-click resets
+    const SCRATCH_H = 'vibedeck-scratch-h';
+    ta.style.height = (parseInt(localStorage.getItem(SCRATCH_H), 10) || 150) + 'px';
+    const split = el.querySelector('.note-split');
+    split.addEventListener('dblclick', () => {
+      ta.style.height = '150px';
+      localStorage.setItem(SCRATCH_H, '150');
+    });
+    split.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      split.classList.add('active');
+      const startY = e.clientY, h0 = ta.offsetHeight;
+      const wrap = el.querySelector('.note-wrap');
+      const move = (ev) => {
+        const h = Math.max(40, Math.min(wrap.clientHeight - 90, h0 + ev.clientY - startY));
+        ta.style.height = h + 'px';
+      };
+      const up = () => {
+        split.classList.remove('active');
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        localStorage.setItem(SCRATCH_H, String(ta.offsetHeight));
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
     const pane = { term: null, fit: null, el, noteEl: ta, cardsEl: el.querySelector('.note-cards'),
                    broadcast: false, id: info.id, kind: info.kind, label: info.label, dead: false, knobSels: [] };
     renderNoteCards(pane);
