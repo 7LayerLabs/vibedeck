@@ -143,16 +143,29 @@ app.get('/api/meter', (req, res) => {
 });
 app.get('/meter', (req, res) => res.sendFile(path.join(__dirname, 'public', 'meter.html')));
 
-const server = app.listen(PORT, () => slog(`VibeDeck on http://localhost:${PORT}`));
+// localhost only: panes run CLIs in skip-permissions mode — never expose that to the LAN
+const server = app.listen(PORT, '127.0.0.1', () => slog(`VibeDeck on http://localhost:${PORT}`));
 const wss = new WebSocketServer({ server });
 
 const sessions = new Map(); // instance id -> session (insertion order = pane order)
 let instanceSeq = 0;
-let lastRound = null; // { ts, prompt, targets: [ids] }
+let lastRound = null; // { ts, prompt, targets: [ids], pending: Map(id -> settle state) }
 
 function broadcastWs(msg) {
   const raw = JSON.stringify(msg);
   for (const client of wss.clients) if (client.readyState === 1) client.send(raw);
+}
+
+// PTY output is coalesced per pane for FLUSH_MS before hitting the wire — TUI
+// repaints arrive as storms of tiny chunks, and one ws message per chunk is
+// what makes a busy deck feel choppy
+const FLUSH_MS = 25;
+function flushOut(id, session) {
+  if (session.flushTimer) { clearTimeout(session.flushTimer); session.flushTimer = null; }
+  if (!session.pendingOut) return;
+  const out = session.pendingOut;
+  session.pendingOut = '';
+  if (sessions.get(id) === session) broadcastWs({ type: 'data', pane: id, data: out });
 }
 
 function spawnPane(kindId, instanceId, extraArgs, yolo) {
@@ -186,7 +199,7 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
     return id;
   }
   const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false,
-                    lastDataTs: Date.now(), spawnTs: Date.now(), queue: [] };
+                    lastDataTs: Date.now(), spawnTs: Date.now(), queue: [], pendingOut: '', flushTimer: null };
   sessions.set(id, session);
 
   // guard against stale events: after a restart/replace, the killed process's
@@ -209,11 +222,13 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
       slog(`bypass warning accepted for ${id}`);
       setTimeout(() => { if (session.alive) proc.write('2'); }, 400);
     }
-    broadcastWs({ type: 'data', pane: id, data });
+    session.pendingOut += data;
+    if (!session.flushTimer) session.flushTimer = setTimeout(() => { session.flushTimer = null; flushOut(id, session); }, FLUSH_MS);
   });
   proc.onExit(({ exitCode }) => {
     session.alive = false;
     if (sessions.get(id) !== session) return;
+    flushOut(id, session); // last output must land before the exit banner
     slog(`exit ${id} code ${exitCode}`);
     broadcastWs({ type: 'exit', pane: id, code: exitCode });
   });
@@ -269,6 +284,17 @@ function readHistory(n = 100) {
       .slice(-n).map(l => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean);
   } catch { return []; }
+}
+
+// the server is the only history writer — clients learn entries (with the real
+// ts, so delete works before a reload) via the 'hist' broadcast. Consecutive
+// repeats of the same prompt are stored once, shell-style.
+let lastHistText = readHistory(1)[0]?.text || '';
+function appendHistory(ts, text) {
+  if (text === lastHistText) return;
+  lastHistText = text;
+  try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts, text }) + '\n'); } catch {}
+  broadcastWs({ type: 'hist', item: { ts, text } });
 }
 
 function readPlaybooks() {
@@ -523,6 +549,22 @@ const PIPE_STEP_TIMEOUT_MS = 10 * 60 * 1000;
 const BUSY_TAIL = /esc\s+to\s+interrupt/i;
 let pipeline = null; // { def, prompt, output, step, paneId, stepText, stepStart, lastCleanLen, stableSince }
 
+// shared settle check (pipeline steps + broadcast rounds): the answer is done
+// when its cleaned text stops growing and the pane looks idle. st carries
+// { lastCleanLen, stableSince }. Returns the clean text, or null if not settled.
+function settledAnswer(s, promptText, st) {
+  const clean = cleanTui(s.roundOut, promptText);
+  // any non-empty clean text counts as an answer — "4." is a full claude reply.
+  // Premature settles are prevented by the stability window + busy-marker veto,
+  // not by length (a 10-char floor here made short answers hang forever)
+  if (!clean.length) return null;
+  if (clean.length !== st.lastCleanLen) { st.lastCleanLen = clean.length; st.stableSince = Date.now(); return null; }
+  if (Date.now() - st.stableSince < PIPE_STABLE_MS) return null;
+  const rawQuiet = Date.now() - s.lastDataTs > 4000;
+  if (!rawQuiet && BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)))) return null;
+  return clean;
+}
+
 function firstPaneOfKind(kind) {
   for (const [id, s] of sessions) if (s.kind === kind && s.alive) return id;
   return null;
@@ -577,16 +619,33 @@ setInterval(() => {
   if (!s || !s.alive) return endPipeline('error', `pane ${p.paneId} died mid-step`);
   if (Date.now() - p.stepStart > PIPE_STEP_TIMEOUT_MS) return endPipeline('error', `step ${p.step + 1} timed out`);
   if (s.queue.length) return; // prompt hasn't landed yet
-  const clean = cleanTui(s.roundOut, p.stepText);
-  if (clean.length < 10) return; // no real answer yet
-  if (clean.length !== p.lastCleanLen) { p.lastCleanLen = clean.length; p.stableSince = Date.now(); return; }
-  if (Date.now() - p.stableSince < PIPE_STABLE_MS) return;
-  // idle check: a done CLI goes raw-quiet (claude/codex); grok shimmers forever
-  // even when idle, so for still-painting panes fall back to the busy-marker veto
-  const rawQuiet = Date.now() - s.lastDataTs > 4000;
-  if (!rawQuiet && BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)))) return; // still working
+  const clean = settledAnswer(s, p.stepText, p);
+  if (clean === null) return;
   p.output = clean;
   advancePipeline();
+}, 1000);
+
+// broadcast-round watcher: as each target's answer settles the client gets
+// answerDone (dot stops pulsing); when the last one lands, roundDone (compare
+// button glows). Pipeline steps set lastRound without `pending`, so they skip this.
+setInterval(() => {
+  const r = lastRound;
+  if (!r || !r.pending || !r.pending.size) return;
+  const gaveUp = Date.now() - r.ts > PIPE_STEP_TIMEOUT_MS;
+  for (const [id, st] of r.pending) {
+    const s = sessions.get(id);
+    if (s && s.alive && !gaveUp) {
+      if (s.queue.length) continue;
+      // fallback: an all-numeric answer ("2 + 2 = 4.") cleans to nothing, so
+      // settledAnswer can't see it — but output happened and the pane went
+      // raw-silent, which is claude/codex's idle signature. Call it done.
+      const quietDone = s.roundOut.length && Date.now() - s.lastDataTs > 15000;
+      if (settledAnswer(s, r.prompt, st) === null && !quietDone) continue;
+    }
+    r.pending.delete(id); // settled, quiet, dead, or timed out — either way stop watching
+    broadcastWs({ type: 'answerDone', pane: id });
+  }
+  if (!r.pending.size) broadcastWs({ type: 'roundDone', ts: r.ts, count: r.targets.length });
 }, 1000);
 
 for (const kind of state.kinds) spawnPane(kind);
@@ -610,6 +669,7 @@ wss.on('connection', (ws) => {
     step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
     label: kindOf(pipeline.def.steps[pipeline.step].kind).label }));
   for (const [id, s] of sessions) {
+    flushOut(id, s); // replay includes not-yet-flushed bytes — flush first so they aren't sent twice
     ws.send(JSON.stringify({ type: 'data', pane: id, data: s.buffer, replay: true }));
     if (!s.alive) ws.send(JSON.stringify({ type: 'exit', pane: id, code: null }));
   }
@@ -641,8 +701,9 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
       const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
-      lastRound = { ts: Date.now(), prompt: msg.data, targets };
-      try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: lastRound.ts, text: msg.data }) + '\n'); } catch {}
+      lastRound = { ts: Date.now(), prompt: msg.data, targets,
+                    pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0 }])) };
+      appendHistory(lastRound.ts, msg.data);
       for (const id of targets) {
         const t = sessions.get(id);
         t.roundOut = '';
@@ -671,6 +732,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'histdel') {
       const items = readHistory(10000).filter(h => h.ts !== msg.ts);
       try { fs.writeFileSync(HISTORY_FILE, items.map(h => JSON.stringify(h)).join('\n') + (items.length ? '\n' : '')); } catch {}
+      lastHistText = items.length ? items[items.length - 1].text : ''; // deleting the newest re-allows it
     } else if (msg.type === 'playbooks') {
       ws.send(JSON.stringify({ type: 'playbooks', items: readPlaybooks() }));
     } else if (msg.type === 'pipelines') {
@@ -678,7 +740,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'pipeline') {
       const prompt = String(msg.prompt || '').trim();
       if (!prompt) return;
-      try { fs.appendFileSync(HISTORY_FILE, JSON.stringify({ ts: Date.now(), text: prompt }) + '\n'); } catch {}
+      appendHistory(Date.now(), prompt);
       startPipeline(msg.name, prompt);
     } else if (msg.type === 'notesSet') {
       writeNotes(String(msg.text ?? ''));
