@@ -547,6 +547,7 @@ function buildPane(info) {
       <span class="spacer"></span>
       <span class="ctl">
         <button class="tn" title="turn this pane's last answer into plain-english next steps in the NOTES pane">&rarr; notes</button>
+        <button class="ts" title="file this pane's last answer into Sidecar as a clean formatted doc (localhost:3010)">&rarr; sidecar</button>
         <select class="relay" title="send this pane's last answer to another pane"><option value="">relay to</option></select>
         <button class="mv left" title="move pane left"><svg class="i" viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
         <button class="mv right" title="move pane right"><svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
@@ -571,7 +572,7 @@ function buildPane(info) {
 
   if (isNotes) {
     // notepad pane: no PTY — a shared autosaving textarea (data/notes.md)
-    ['.knobs', '.yolo', '.tn', '.relay', '.bc', '.rs'].forEach(sel => el.querySelector(sel)?.remove());
+    ['.knobs', '.yolo', '.tn', '.ts', '.relay', '.bc', '.rs'].forEach(sel => el.querySelector(sel)?.remove());
     const ta = el.querySelector('.note-area');
     ta.value = notesText;
     let saveTimer;
@@ -763,6 +764,7 @@ function buildPane(info) {
     bcBtn.classList.toggle('on', pane.broadcast);
   });
   el.querySelector('.tn').addEventListener('click', () => send({ type: 'toNotes', pane: info.id }));
+  el.querySelector('.ts').addEventListener('click', () => send({ type: 'toSidecar', pane: info.id }));
   const doRestart = () => send({ type: 'restart', pane: info.id });
   el.querySelector('.rs').addEventListener('click', doRestart);
   el.querySelector('.dead-rs').addEventListener('click', doRestart);

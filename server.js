@@ -464,6 +464,29 @@ function writeNotes(text) { try { fs.writeFileSync(NOTES_FILE, text); } catch (e
 function readNoteItems() { try { return JSON.parse(fs.readFileSync(NOTE_ITEMS_FILE, 'utf8')); } catch { return []; } }
 function writeNoteItems(items) { try { fs.writeFileSync(NOTE_ITEMS_FILE, JSON.stringify(items, null, 2)); } catch (e) { slog(`notes.json write failed: ${e.message}`); } }
 
+// "→ sidecar": file a pane's last cleaned answer into Sidecar (localhost:3010)
+// as a formatted doc tab. Sidecar handles the title, library and Obsidian export.
+function pushToSidecar(fromId) {
+  const s = sessions.get(fromId);
+  if (!s) return;
+  const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+  const label = kindOf(s.kind).label;
+  if (src.length < 40) {
+    const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
+    return broadcastWs({ type: 'notesError', text: busy
+      ? `${label} is still answering — let it finish, then hit → sidecar`
+      : 'nothing in that pane to file yet — broadcast a prompt first' });
+  }
+  const title = (lastRound?.prompt || `${label} answer`).replace(/\s+/g, ' ').trim().slice(0, 60);
+  fetch('http://localhost:3010/filedoc', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ md: src, title, source: label })
+  }).then(r => broadcastWs({ type: 'notesError', text: r.ok
+      ? `${label}'s answer filed to Sidecar — open localhost:3010`
+      : 'Sidecar rejected it — is it up to date?' }))
+    .catch(() => broadcastWs({ type: 'notesError', text: 'Sidecar is not running — start it (start-sidecar.cmd), then hit → sidecar again' }));
+}
+
 // "→ notes": rewrite a pane's last answer in plain english (keeping ALL the
 // detail) via a headless claude call, and add it as a collapsible note card
 let distilling = false;
@@ -747,6 +770,8 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'notes', text: readNotes() });
     } else if (msg.type === 'toNotes') {
       pushToNotes(msg.pane);
+    } else if (msg.type === 'toSidecar') {
+      pushToSidecar(msg.pane);
     } else if (msg.type === 'noteDel') {
       const items = readNoteItems().filter(n => n.id !== msg.id);
       writeNoteItems(items);
