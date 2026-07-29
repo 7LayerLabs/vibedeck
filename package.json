@@ -4,7 +4,8 @@
   "description": "A terminal cockpit for vibe coders — one prompt, every AI CLI answers at once",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test/extract-fixtures.js"
   },
   "license": "MIT",
   "type": "commonjs",

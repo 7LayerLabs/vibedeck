@@ -1,176 +1,117 @@
-# Project: VibeDeck — Token Meter pane
+# Project: VibeDeck — Sprint: trustworthy compare loop
 
 ## Problem Statement
-Derek wants a live token/cost meter (like his VS Code token-meter panels) as a
-pane option, with the ability to pick which CLI meters show.
+VibeDeck's broadcast → compare → promote loop is the product core, but answers
+are scraped from raw PTY bytes (`cleanTui`), winners only bump a local tally,
+history stores prompts only (not answers), judge always hardcodes Claude, and
+missing CLIs fail silently. This sprint makes the loop **accurate, decisive,
+and recoverable** without bloating the monofile architecture.
 
-## What was built
-- `meter-cli.js` — a terminal dashboard that runs in a normal PTY pane (new
-  `meter` ROSTER kind), so zero special-casing in pane management. Refreshes
-  every 10s, reads TODAY's local logs:
-  - claude: ~/.claude/projects/**/*.jsonl per-message usage, per-model cost
-    lines (fable/opus/sonnet/haiku), cache r/w, API-rate $ (0.1x reads,
-    1.25x/2x writes). Incremental byte-offset parsing, so big fleet
-    transcripts aren't re-read each tick.
-  - codex: ~/.codex/sessions rollouts — cumulative tokens + % of plan window
-    (real number from its rate_limits payload); $ estimate.
-  - grok: logs NO token counts — char-based estimate (size/4), labeled.
-- Selection: launch arg (all/claude/codex/claude+grok/…, via a "show ▾"
-  relaunch knob) + live checkbox toggles (press 1/2/3 in the pane).
-- Meter panes default to bcast OFF and are skipped by pane-count auto-grow.
+## Scope (this sprint only)
+1. Better answer extraction (display paths only — settle logic untouched)
+2. Promote winner → next context
+3. CLI health on boot
+4. Round history (prompt + answers + winner)
+5. Blinded judge + judge picker (Claude / Codex)
 
-## Review
-- Verified: standalone run against real logs ($71.5 api-rate today, fleet
-  included), 1/2/3 toggles, live pane spawn + render (meter-3).
-- Gotcha: quoting the node script path in the ROSTER cmd broke module
-  resolution through cmd.exe+ConPTY (MODULE_NOT_FOUND) — unquoted works.
-- Pricing table at the top of meter-cli.js (claude real rates from the
-  claude-api skill; codex/grok marked estimates).
+**Out of scope:** React rewrite, Electron, roster plugins, cloud sync, yolo
+policy UI, hybrid headless pipeline steps, Grok as judge (no reliable
+headless mode — deliberately dropped, not deferred).
+
+## Plan revisions vs. the original draft (agreed before build)
+- **A2 changed:** `extractAnswer` is display-only (compare, relay, notes,
+  judge, rounds storage). `settledAnswer` and the round watcher stay on
+  `cleanTui` — its length-stability IS the done signal, and a "last block"
+  extractor's length jumps around during repaints.
+- **Extraction approach changed:** instead of "last contiguous block" (which
+  drops the scrolled-off head of long answers — scrollback lines print once,
+  early), extractAnswer = cleanTui + partial-paint prefix removal (a line
+  whose normalized form (≥6 chars) is a strict prefix of a later line is a
+  truncated repaint; drop it).
+- **E0 added:** the judge is now BLIND — answers go in unlabeled so a judge
+  can't favor its own entry; the label legend is prepended to the verdict
+  server-side after it returns.
+- **Order changed:** Track C (health) went first — zero risk, instant win.
+- **Fixture harvesting:** `VIBEDECK_CAPTURE=1` dumps each settled pane's raw
+  bytes to `data/raw-rounds/` so real transcripts can grow the fixture set.
 
 ---
 
-# Project: VibeDeck — skip-permissions everywhere + ⟳ update models
+## Plan (all complete)
 
-## Problem Statement
-Claude panes bypass permissions only via Derek's global settings; codex/grok
-still stop to ask. And model lists are hard-coded in index.html KNOBS, so new
-releases require a code edit.
+### Track C — CLI health on boot
+- [x] Boot-time check: `fs.existsSync` on Windows (ROSTER paths are absolute),
+      `which` on mac/linux; claude/codex/grok only
+- [x] `health` array in ws `init`
+- [x] Client: dismissible strip under the header with install hints
 
-## Plan
-- [x] Task 1: per-CLI skip-permissions flags in ROSTER (claude
-      --dangerously-skip-permissions, codex
-      --dangerously-bypass-approvals-and-sandbox, grok --always-approve),
-      applied at every spawn; auto-accept claude's bypass warning dialog
-      (send "2" — plain Enter would pick "No, exit")
-- [x] Task 2: models.json = source of truth for model/effort lists; served in
-      init; client KNOBS reads choices from it
-- [x] Task 3: ⟳ update models button — grok via `grok models` (authoritative),
-      claude/codex by opening /model in their live pane, scraping the painted
-      menu, Esc to close; sane-parse guard keeps old list on unclear scrape;
-      results saved to models.json + broadcast, dropdowns repopulate live
-- [x] Task 4: restart + verify all panes boot yolo, run update-models e2e
-- [x] Task 5 (added mid-flight): image paste/drag — drop or Ctrl+V an image on
-      a pane; server saves to data/images/ and types the path into the CLI
+### Track A — Answer extraction
+- [x] `lib/screen.js`: stripAnsi / segmentAnsi / cleanTui moved verbatim;
+      new `extractAnswer` (display-only, see revisions above)
+- [x] Wired into `roundResponses`, relay, `pushToNotes`, rounds storage —
+      NOT into `settledAnswer` (deliberate)
+- [x] `test/fixtures.js` + `test/extract-fixtures.js`, `npm test` (42
+      assertions, 4 fixtures: claude repaint, codex stream, short answer,
+      prefix-vs-short-line)
+- [x] Raw capture rig behind `VIBEDECK_CAPTURE=1`
 
-## Review
-### Changes Made
-- Verified via e2e ws client: claude/codex boot fine with yolo flags; ⟳ report
-  "grok 2 (live) · claude 4 (scraped) · codex pane busy — kept old" (busy pane
-  = honest soft-fail, click ⟳ again); image saved + path typed into claude.
-- Scrape bug found: stripAnsi without cursor-move segmentation fuses menu text
-  ("opusopus4", "gpt-5.4Strong"). Extracted segmentAnsi() (CUF→space, CUP→\n)
-  now shared by cleanTui and the scraper; codex regex is case-sensitive so a
-  fused capitalized description ends the match; claude alias = first word of
-  each numbered menu entry, lowercased. Scrapes needing trust: ≥2 models.
-- models.json is runtime-updated → gitignored; code defaults cover fresh clones.
+### Track D — Round history
+- [x] `data/rounds.jsonl` written when a round settles: ts, prompt, cwd,
+      responses (text capped 16KB each), winnerKind; capped at last 200
+- [x] Prompt `history.jsonl` unchanged (↑/↓ cycling identical)
+- [x] History overlay: Prompts | Rounds tabs; rounds searchable, chips per
+      model, winner chip; row click loads prompt; compare button reopens the
+      full round snapshot in the compare overlay
+- [x] Crown patches the round's winnerKind (pendingCrown covers crowning
+      before the round file write lands)
 
-- Follow-ups from Derek watching the UI: per-pane "yolo" toggle button next to
-  the knobs (amber when on, default on, restart applies it; hidden for shell);
-  no-cache static serving (stale UI was why ⟳ looked missing); scrape retries
-  3x when a pane is busy — codex now discovers gpt-5.6-sol/terra/luna.
-- Image drop/paste verified e2e: file saved to data/images/, path typed into
-  the pane's CLI input.
+### Track B — Promote winner
+- [x] `promote` button per compare column → fills the prompt bar with
+      original prompt + winner answer + "Next:", cursor at end
+- [x] Promoted mega-prompts broadcast with `noHist:true` — they'd pollute
+      ↑/↓ cycling and rounds.jsonl already records them
+- [x] Winner button keeps the localStorage tally AND sends `crown`
 
-### Notes
-- Esc cancels claude's /model picker without changing the model — the ⟳ scrape
-  is safe mid-session, panes just show the menu flash open/closed.
-- claude's bypass-warning dialog (first run only) defaults to "No, exit"; the
-  auto-accept types "2", never plain Enter.
+### Track E — Judge
+- [x] E0: blind judging (unlabeled answers; legend prepended to verdict)
+- [x] `judge` message takes `kind`; server validates against JUDGE_KINDS
+- [x] Runners: claude `claude -p`, codex `codex exec -` (both stdin);
+      verdict/err stripped of ANSI; judge kind shown in the verdict header
+- [x] Picker in compare header, persisted in localStorage
+- [x] Grok: intentionally not offered (see out-of-scope)
 
----
-
-# Project: VibeDeck — Auto-Pipelines
-
-## Problem Statement
-Relay is manual: you watch a pane finish, then pick "→ relay". Auto-pipelines
-run a whole chain hands-free: type one prompt, pick a pipeline, and the server
-sequences it — e.g. Claude plans → Codex builds → Grok reviews.
-
-## Design
-- Pipeline = JSON file in `pipelines/` (like playbooks): named steps, each with
-  a `kind` (claude/codex/grok/shell) and a `prompt` template. `{prompt}` = the
-  user's typed prompt, `{output}` = previous step's cleaned answer.
-- Each step targets the first alive pane of that kind (error toast if missing).
-- Completion detection: a step is done when its pane's cleaned round output
-  (cleanTui) has stopped growing for 8s AND the pane's ready pattern is visible
-  again. Spinners are already filtered by cleanTui, so Grok's constant
-  animation doesn't fake progress. Per-step timeout 10 min. One pipeline at a
-  time; cancel button aborts.
-- UI: "pipeline ▾" dropdown next to playbooks. Type a prompt, pick a pipeline,
-  it runs. Status chip in the prompt bar (step 2/3 · CODEX · cancel ×).
-
-## Plan
-- [x] Task 1: `pipelines/` dir + two defaults (plan→build→review,
-      answer→critique→revise); served in ws `init` (mirrors readPlaybooks)
-- [x] Task 2: server pipeline runner — startPipeline/advancePipeline/endPipeline
-      + 1s done-detection tick (cleaned output stable 8s, no "esc to interrupt"
-      in tail, ready pattern back); 10-min step timeout; cancel drops later steps
-- [x] Task 3: UI — pipeline dropdown (⛓ name + step labels), amber status chip
-      with cancel ×, toasts on done/error/cancel; late-joining clients get the
-      current step on connect
-- [x] Task 4: end-to-end test with a small real prompt across 3 panes
-
-## Progress Notes
-- Each pipeline step sets lastRound, so Compare live-shows the running step
-- Pipeline prompts are saved to history like broadcasts
-
-## Review
-### Changes Made
-- `pipelines/` dir + 2 defaults: plan→build→review (claude→codex→grok),
-  answer→critique→revise (claude→grok→claude); plain JSON, `{prompt}` = typed
-  prompt, `{output}` = previous step's cleaned answer; steps target the first
-  alive pane of their kind
-- `server.js`: readPipelines, startPipeline/advancePipeline/endPipeline, 1s
-  done-detection tick, ws handlers (pipeline/pipelineCancel/pipelines), current
-  step re-sent to late-joining clients
-- `public/index.html`: ⛓ pipeline dropdown, amber status chip + cancel ×, toasts
-- Bug found in test 1: ROSTER `ready` patterns are startup-only signals (claude's
-  post-answer screen is just "❯") — using them as a done condition hangs the step.
-  Done = cleaned output stable 8s + (raw-quiet 4s OR no "esc to interrupt" tail).
-- Bug found in test 2: multi-line prompts paste-ingest slowly; Enter at 150ms
-  never submits (stuck "[Pasted text #N]"). writePrompt now scales the Enter
-  delay with line count (600ms + 25ms/line, cap 3s).
-- cleanTui hardened: paste-widget + "Turn completed in Ns" chrome filtered;
-  lines contained in the prompt (input-box echo fragments) dropped.
-- E2E verified: answer→critique→revise ran 3 steps in 83s, real content flowed
-  through both handoffs, final revision captured.
-
-### Notes
-- Cleaned output still carries some partial-repaint garble (Ink cursor-forward
-  paints). Proper fix someday: feed each pane through @xterm/headless and read
-  the real screen instead of regex-scraping the raw stream — would upgrade
-  compare/relay/judge/pipelines all at once.
-- Steps time out after 10 min; cancel drops later steps but leaves the current
-  pane running. One pipeline at a time.
+### Finish
+- [x] npm test green
+- [x] Server restarted + smoked
+- [x] Review below
 
 ---
 
-# Project: VibeDeck — multi-AI terminal cockpit (formerly TriTerm)
-
-## Problem Statement
-Ghostty-style local app for vibe coders: one prompt bar broadcasts to 1-4 live
-terminal panes running AI CLIs (claude/codex/grok/shell, duplicates allowed).
-Each pane stays fully interactive for answering questions/permissions.
-
-## Plan
-- [x] Scaffold Node project (express/ws/@lydell/node-pty/xterm, prebuilt PTY)
-- [x] PTY server with websocket bridge, scrollback replay, restart, resize
-- [x] Prompt bar + xterm panes, per-pane broadcast toggle, Ctrl+1..4 / Ctrl+0
-- [x] WebGL renderer + resize-nudge (DOM renderer smeared TUI redraws)
-- [x] Dynamic panes: 1-4 count dropdown, 2x2 grid at 4, persisted to panes.json
-- [x] Per-pane CLI dropdown (replace), ◀ ▶ placement, instance-based (3 Claudes OK)
-- [x] Model/effort knobs, verified live: claude /model + /effort (staged typing);
-      codex/grok relaunch with -m (they can't switch mid-session)
-- [x] Rename TriTerm → VibeDeck (folder, bat, UI, memory)
-
 ## Review
-### Changes Made
-- `C:\Users\Derek\vibedeck` — server.js (instance sessions, add/close/reorder/
-  replace/restart-with-args), public/index.html (all UI), VibeDeck.bat
-- Verified model lists: claude fable/opus/sonnet/haiku + effort low..max;
-  codex gpt-5.5/gpt-5.4/gpt-5.4-mini/gpt-5.3-codex-spark; grok grok-4.5/grok-composer-2.5-fast
 
-### Notes
-- Claude slash commands must be typed staged (cmd, arg, Enter separately)
-- Claude trust dialog eats the first input of every fresh session — click it once
-- Esc deliberately not bound; CLIs use it to interrupt
+### Changes Made
+| File | Change |
+|------|--------|
+| `lib/screen.js` | **new** — extraction helpers; `cleanTui` doubles as the settle signal (warning comment in file), `extractAnswer` is display-only |
+| `server.js` | health check + JUDGE_KINDS at boot; rounds.jsonl read/append/crown; blind judge with kind; extractAnswer on all display paths; noHist; capture rig; init gains health/judges/rounds |
+| `public/index.html` | health strip, judge picker, promote + crown in compare, Prompts/Rounds history tabs, help row |
+| `test/fixtures.js`, `test/extract-fixtures.js` | **new** — 4 ANSI fixtures, 42 assertions, no framework |
+| `package.json` | `npm test` script |
+
+### Key decisions
+- Settle detection (`settledAnswer`, quiet-done fallback) is untouched — the
+  riskiest part of the original plan was wiring new extraction into it, and
+  that was deliberately not done.
+- Judge bias fix (blinding) shipped alongside the picker; the picker alone
+  wouldn't have fixed Claude grading its own homework.
+- Tests caught one real bug pre-ship: codex's `tokens used:` footer wasn't in
+  `CHROME_LINE`. Fixed; also improves settle stability (the counter changes
+  every repaint).
+
+### Notes / follow-ups
+- Pipeline steps do NOT write rounds.jsonl (they set lastRound without
+  `pending`) — intentional for v1.
+- To grow fixtures from real transcripts: run with `VIBEDECK_CAPTURE=1`,
+  broadcast normally, harvest `data/raw-rounds/*.txt`.
+- If codex-as-judge misbehaves, check `codex exec -` reads stdin on the
+  installed version; failure is reported honestly in the verdict box.

@@ -122,6 +122,17 @@
   #cwdRecents .r-item .p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #cwdPanel .note { font-size: 10px; color: var(--faint); margin-top: 10px; line-height: 1.6; }
 
+  /* ---- cli health strip ---- */
+  #healthStrip { display: none; align-items: center; gap: 12px; flex: none;
+    background: var(--bg1); border-bottom: 1px solid var(--line);
+    border-left: 3px solid var(--bad); padding: 6px 12px; font-size: 11px; color: var(--dim); }
+  #healthStrip.open { display: flex; }
+  #healthStrip .hs-items { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; gap: 3px 20px; }
+  #healthStrip .hs-item b { color: var(--bad); letter-spacing: 1px; }
+  #healthStrip .hs-x { background: none; border: none; color: var(--faint);
+    font: inherit; font-size: 14px; line-height: 1; padding: 0 2px; cursor: pointer; }
+  #healthStrip .hs-x:hover { color: var(--text); }
+
   /* ================= panes ================= */
   #main { flex: 1; display: flex; min-height: 0; }
   #panes { flex: 1; display: grid; min-width: 0; min-height: 0; background: var(--line); }
@@ -253,8 +264,14 @@
   #verdict.open { display: block; }
   #verdict .v-head { display: flex; align-items: center; gap: 8px; color: var(--amber);
     font-size: 11px; letter-spacing: 2px; font-weight: 700; margin-bottom: 8px; white-space: normal; }
+  #judgeKind { appearance: none; background: var(--bg2); border: 1px solid var(--line);
+    color: var(--dim); font: inherit; font-size: 11px; border-radius: 6px;
+    padding: 7px 8px; cursor: pointer; outline: none; }
+  #judgeKind:hover { color: var(--text); border-color: var(--line2); }
+  #judgeKind option { background: var(--bg1); color: var(--text); }
 
   /* ---- history ---- */
+  #histTabs { display: flex; gap: 6px; margin-bottom: 10px; }
   #histSearch { background: var(--bg0); border: 1px solid var(--line); color: var(--text);
     font: inherit; font-size: 12px; border-radius: 6px; padding: 8px 12px;
     outline: none; margin-bottom: 10px; }
@@ -269,6 +286,17 @@
   #histList .h-item .h-del { flex: none; display: flex; background: none; border: 1px solid var(--line);
     color: var(--dim); border-radius: 4px; padding: 3px 6px; cursor: pointer; }
   #histList .h-item .h-del:hover { color: var(--bad); border-color: var(--bad); }
+  #histList .h-item .h-chips { flex: none; display: flex; gap: 5px; }
+  #histList .h-item .chip { display: flex; align-items: center; gap: 3px;
+    border: 1px solid var(--line2); border-radius: 4px; padding: 1px 6px;
+    font-size: 10px; letter-spacing: .5px; }
+  #histList .h-item .chip.win { border-color: var(--ok); color: var(--ok); }
+  #histList .h-item .chip svg.i { width: 10px; height: 10px; }
+  #histList .h-item .h-cmp { flex: none; display: flex; align-items: center; gap: 4px;
+    background: none; border: 1px solid var(--line); color: var(--dim); font: inherit;
+    font-size: 10px; border-radius: 4px; padding: 3px 7px; cursor: pointer; }
+  #histList .h-item .h-cmp:hover { color: var(--amber); border-color: var(--amber); }
+  #histList .h-item .h-cmp svg.i { width: 11px; height: 11px; }
 
   /* ---- shortcuts help ---- */
   #helpBox { max-width: 560px; margin: 0 auto; width: 100%; }
@@ -346,6 +374,10 @@
         <svg class="i" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg></button>
     </div>
   </header>
+  <div id="healthStrip">
+    <div class="hs-items"></div>
+    <button class="hs-x" title="dismiss">&times;</button>
+  </div>
   <div id="main">
     <div id="panes"></div>
     <div id="meterbar"><iframe id="meterframe"></iframe></div>
@@ -368,6 +400,7 @@
   <div class="ov-head">
     <h2><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/></svg>Compare</h2>
     <span class="ov-prompt"></span>
+    <select id="judgeKind" title="which CLI reads the answers"></select>
     <button id="judgeBtn" title="an AI judge picks a winner and merges the best ideas">
       <svg class="i" viewBox="0 0 24 24"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M19 7l-2.5 5a3 3 0 0 0 5 0z"/><path d="M8 21h8"/></svg>judge</button>
     <button id="cmpClose">close <kbd style="font-size:10px">esc</kbd></button>
@@ -382,6 +415,10 @@
     <h2><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>History</h2>
     <span class="ov-prompt">click a prompt to load it into the bar</span>
     <button id="histClose">close <kbd style="font-size:10px">esc</kbd></button>
+  </div>
+  <div id="histTabs">
+    <button class="tbtn on" data-tab="prompts">prompts</button>
+    <button class="tbtn" data-tab="rounds">rounds</button>
   </div>
   <input id="histSearch" placeholder="filter prompts" spellcheck="false">
   <div id="histList"></div>
@@ -404,6 +441,7 @@
       <tr><td><kbd>Esc</kbd></td><td class="d">close overlays here &middot; interrupts the CLI inside a pane</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>V</kbd> / drop</td><td class="d">paste or drop an image onto a pane &mdash; its path is typed into that CLI</td></tr>
       <tr><td>drag divider</td><td class="d">resize panes &middot; double-click resets</td></tr>
+      <tr><td>history &rarr; rounds</td><td class="d">every past round with all its answers &mdash; reopen one in compare, then <b>promote</b> a winner to keep going from it</td></tr>
     </table>
   </div>
 </div>
@@ -450,12 +488,16 @@ const ICONS = {
   folder: '<svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
   chain: '<svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>',
   note: '<svg class="i" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  promote: '<svg class="i" viewBox="0 0 24 24"><path d="M12 20V5"/><path d="M6 11l6-6 6 6"/></svg>',
+  compare: '<svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="7.5" height="16" rx="1.5"/><rect x="13.5" y="4" width="7.5" height="16" rx="1.5"/></svg>',
 };
 
 const ws = new WebSocket(`ws://${location.host}`);
 const panes = new Map(); // instance id -> pane object (insertion order = layout order)
 let roster = [], maxPanes = 5, history = [], histIdx = -1, playbooks = [], pipelines = [];
-let cwd = '', recents = [], notesText = '', noteItems = [];
+let cwd = '', recents = [], notesText = '', noteItems = [], rounds = [];
+// a promoted answer becomes a mega-prompt in the bar; it's kept out of ↑/↓ history
+const PROMOTE_HEAD = 'Continue from the winning answer below.';
 const openCards = new Set(); // note ids the user expanded — survives rerenders
 
 // note cards: newest on top, click to expand, headings ("Foo:") tinted amber
@@ -916,7 +958,10 @@ ws.onmessage = (ev) => {
     modelsCfg = msg.models || {};
     notesText = msg.notes || '';
     noteItems = msg.noteItems || [];
+    rounds = msg.rounds || [];
     renderAllNoteCards();
+    setHealth(msg.health || []);
+    setJudges(msg.judges || []);
     setCwd(msg.cwd || '', msg.recents || []);
     setPlaybooks();
     setPipelines();
@@ -974,14 +1019,23 @@ ws.onmessage = (ev) => {
     history.push(msg.item);
   } else if (msg.type === 'round') {
     renderCompare(msg);
+  } else if (msg.type === 'roundSaved') {
+    rounds.push(msg.round);
+    refreshRoundsTab();
+  } else if (msg.type === 'crowned') {
+    const r = rounds.find(x => x.ts === msg.ts);
+    if (r) r.winnerKind = msg.kind;
+    refreshRoundsTab();
   } else if (msg.type === 'judging') {
     const v = $('verdict');
     v.classList.add('open');
-    v.innerHTML = `<div class="v-head">${ICONS.scale}JUDGE</div>reading all the answers… (can take a minute)`;
+    v.innerHTML = `<div class="v-head">${ICONS.scale}JUDGE <span class="jk"></span></div>reading all the answers… (can take a minute)`;
+    v.querySelector('.jk').textContent = judgeTag(msg.kind);
   } else if (msg.type === 'judgement') {
     const v = $('verdict');
     v.classList.add('open');
-    v.innerHTML = `<div class="v-head">${ICONS.scale}VERDICT</div>`;
+    v.innerHTML = `<div class="v-head">${ICONS.scale}VERDICT <span class="jk"></span></div>`;
+    v.querySelector('.jk').textContent = judgeTag(msg.kind);
     v.appendChild(Object.assign(document.createElement('span'), { textContent: msg.text }));
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || [];
@@ -1078,6 +1132,29 @@ const goCwd = () => { const d = $('cwdInput').value.trim(); if (d) send({ type: 
 $('cwdGo').addEventListener('click', goCwd);
 $('cwdInput').addEventListener('keydown', e => { if (e.key === 'Enter') goCwd(); });
 
+// ---------- cli health ----------
+const CLI_HINTS = {
+  claude: 'npm i -g @anthropic-ai/claude-code',
+  codex: 'npm i -g @openai/codex',
+  grok: 'Grok CLI not found (expected ~\\.grok\\bin\\grok.exe)',
+};
+function setHealth(list) {
+  const strip = $('healthStrip'), box = strip.querySelector('.hs-items');
+  const missing = list.filter(h => !h.ok);
+  box.innerHTML = '';
+  if (!missing.length) { strip.classList.remove('open'); return; }
+  missing.forEach(h => {
+    const row = document.createElement('span');
+    row.className = 'hs-item';
+    row.innerHTML = '<b></b> missing — <span class="hint"></span>';
+    row.querySelector('b').textContent = h.label || String(h.id || '').toUpperCase();
+    row.querySelector('.hint').textContent = CLI_HINTS[h.id] || h.detail || '';
+    box.appendChild(row);
+  });
+  strip.classList.add('open');
+}
+$('healthStrip').querySelector('.hs-x').addEventListener('click', () => $('healthStrip').classList.remove('open'));
+
 // ---------- playbooks ----------
 const playbookEl = $('playbook');
 function setPlaybooks() {
@@ -1159,7 +1236,14 @@ pipelineEl.addEventListener('mousedown', () => send({ type: 'pipelines' }));
 $('pipeChip').querySelector('.pc-x').addEventListener('click', () => send({ type: 'pipelineCancel' }));
 
 // ---------- history ----------
+let histTab = 'prompts';
 function renderHistory(filter) {
+  histTab === 'rounds' ? renderRounds(filter) : renderPrompts(filter);
+}
+function refreshRoundsTab() {
+  if (histTab === 'rounds' && $('histOverlay').classList.contains('open')) renderRounds($('histSearch').value);
+}
+function renderPrompts(filter) {
   const list = $('histList');
   list.innerHTML = '';
   const f = (filter || '').toLowerCase();
@@ -1187,6 +1271,56 @@ function renderHistory(filter) {
   });
   if (!items.length) list.innerHTML = `<div class="h-item" style="cursor:default;color:var(--faint)">${f ? 'nothing matches' : 'no prompts yet — broadcast something'}</div>`;
 }
+// rounds tab: one row per saved broadcast, with every model that answered
+function renderRounds(filter) {
+  const list = $('histList');
+  list.innerHTML = '';
+  const f = (filter || '').toLowerCase();
+  const items = [...rounds].reverse().filter(r => !f || (r.prompt || '').toLowerCase().includes(f));
+  items.forEach(r => {
+    const d = document.createElement('div');
+    d.className = 'h-item';
+    const ts = new Date(r.ts);
+    const when = `${ts.getMonth() + 1}/${ts.getDate()} ${String(ts.getHours()).padStart(2, '0')}:${String(ts.getMinutes()).padStart(2, '0')}`;
+    d.innerHTML = `<span class="h-ts">${when}</span><span class="h-text"></span><span class="h-chips"></span>`
+      + `<button class="h-cmp" title="reopen this round side by side">${ICONS.compare}compare</button>`;
+    d.querySelector('.h-text').textContent = r.prompt || '';
+    const chips = d.querySelector('.h-chips');
+    (r.responses || []).forEach(resp => {
+      const won = !!r.winnerKind && r.winnerKind === resp.kind;
+      const chip = document.createElement('span');
+      chip.className = 'chip' + (won ? ' win' : '');
+      if (won) chip.innerHTML = ICONS.award;
+      else chip.style.color = color(resp.kind);
+      chip.appendChild(Object.assign(document.createElement('span'), { textContent: resp.label || resp.kind }));
+      chips.appendChild(chip);
+    });
+    d.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      promptEl.value = r.prompt || '';
+      sizePrompt();
+      $('histOverlay').classList.remove('open');
+      promptEl.focus();
+    });
+    d.querySelector('.h-cmp').addEventListener('click', () => {
+      $('histOverlay').classList.remove('open');
+      renderCompare(r);
+    });
+    list.appendChild(d);
+  });
+  if (!items.length) list.innerHTML = `<div class="h-item" style="cursor:default;color:var(--faint)">${f ? 'nothing matches' : 'no rounds yet — broadcast something and let the models answer'}</div>`;
+}
+$('histTabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  histTab = b.dataset.tab;
+  $('histTabs').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+  $('histSearch').placeholder = histTab === 'rounds' ? 'filter rounds' : 'filter prompts';
+  $('histOverlay').querySelector('.ov-prompt').textContent = histTab === 'rounds'
+    ? 'click a round to reload its prompt · compare reopens every answer'
+    : 'click a prompt to load it into the bar';
+  renderHistory($('histSearch').value);
+});
 $('histBtn').addEventListener('click', () => {
   $('histSearch').value = '';
   renderHistory();
@@ -1205,7 +1339,18 @@ const WINS_KEY = 'vibedeck-wins';
 const getWins = () => { try { return JSON.parse(localStorage.getItem(WINS_KEY)) || {}; } catch { return {}; } };
 $('cmpBtn').addEventListener('click', () => { $('cmpBtn').classList.remove('glow'); send({ type: 'round' }); });
 $('cmpClose').addEventListener('click', () => $('cmpOverlay').classList.remove('open'));
-$('judgeBtn').addEventListener('click', () => send({ type: 'judge' }));
+
+const JUDGE_KEY = 'vibedeck-judge';
+const judgeKindEl = $('judgeKind');
+function setJudges(list) {
+  judgeKindEl.innerHTML = list.map(k => `<option value="${k}">${k.toUpperCase()}</option>`).join('');
+  judgeKindEl.style.display = list.length ? '' : 'none';
+  const saved = localStorage.getItem(JUDGE_KEY);
+  if (saved && list.includes(saved)) judgeKindEl.value = saved;
+}
+const judgeTag = (kind) => kind ? `(${String(kind).toUpperCase()})` : '';
+judgeKindEl.addEventListener('change', () => localStorage.setItem(JUDGE_KEY, judgeKindEl.value));
+$('judgeBtn').addEventListener('click', () => send({ type: 'judge', kind: judgeKindEl.value }));
 
 function renderCompare(round) {
   const cols = $('cmpCols');
@@ -1227,15 +1372,24 @@ function renderCompare(round) {
         ${r.label}<span class="wins">${wins[r.kind] ? wins[r.kind] + ' wins' : ''}</span>
         <span class="spacer"></span>
         <button class="copy">${ICONS.copy}copy</button>
+        <button class="promote" title="carry this answer into the prompt bar and keep going from it">${ICONS.promote}promote</button>
         <button class="win">${ICONS.award}winner</button>
       </div>
       <div class="cmp-body"></div>`;
     col.querySelector('.cmp-body').textContent = r.text;
+    if (round.winnerKind === r.kind) col.classList.add('winner');
     col.querySelector('.copy').addEventListener('click', (e) => {
       navigator.clipboard.writeText(r.text);
       const b = e.currentTarget;
       b.childNodes[b.childNodes.length - 1].textContent = 'copied';
       setTimeout(() => b.childNodes[b.childNodes.length - 1].textContent = 'copy', 1500);
+    });
+    col.querySelector('.promote').addEventListener('click', () => {
+      promptEl.value = `${PROMOTE_HEAD} Original prompt:\n${round.prompt}\n\nWinner (${r.label}):\n${r.text}\n\nNext: `;
+      sizePrompt();
+      $('cmpOverlay').classList.remove('open');
+      promptEl.focus();
+      promptEl.setSelectionRange(promptEl.value.length, promptEl.value.length);
     });
     col.querySelector('.win').addEventListener('click', () => {
       const w = getWins();
@@ -1244,6 +1398,7 @@ function renderCompare(round) {
       cols.querySelectorAll('.cmp-col').forEach(c => c.classList.remove('winner'));
       col.classList.add('winner');
       col.querySelector('.wins').textContent = `${w[r.kind]} wins`;
+      if (round.ts) send({ type: 'crown', ts: round.ts, kind: r.kind });
     });
     cols.appendChild(col);
   });
@@ -1262,7 +1417,9 @@ promptEl.addEventListener('keydown', (e) => {
     const text = promptEl.value;
     if (!text.trim()) return;
     const targets = [...panes.values()].filter(p => p.broadcast).map(p => p.id);
-    send({ type: 'broadcast', data: text, targets }); // server adds it to history and echoes 'hist' back
+    const out = { type: 'broadcast', data: text, targets }; // server adds it to history and echoes 'hist' back
+    if (text.startsWith(PROMOTE_HEAD)) out.noHist = true; // rounds already keep these
+    send(out);
     histIdx = -1;
     promptEl.value = '';
     sizePrompt();

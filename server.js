@@ -1,7 +1,7 @@
 // VibeDeck — one prompt, a deck of AI CLIs in live terminal panes
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const pty = require('@lydell/node-pty');
@@ -73,51 +73,21 @@ function saveState() {
 }
 
 // ---------- text cleanup for compare/relay/judge ----------
-function stripAnsi(s) {
-  return s
-    .replace(/\x1b\[[0-9;?<>= ]*[a-zA-Z]/g, '') // space allowed: '\x1b[0 q' cursor-style seqs
-    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
-    .replace(/\x1b[()][A-Z0-9]/g, '')
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
-}
-// cursor-forward → space, cursor-positioning → newline, then strip: Ink paints
-// use cursor moves instead of spaces/newlines, so plain stripAnsi fuses words
-function segmentAnsi(s) {
-  return stripAnsi(s.replace(/\x1b\[\d*C/g, ' ').replace(/\x1b\[[0-9;]*[HfABEFd]/g, '\n'));
-}
-// symbol-only lines (borders, spinners) and TUI chrome get dropped
-const SYMBOL_LINE = new RegExp('^[-=>.*\\s' +
-  '\\u2500\\u2502\\u256D\\u256E\\u2570\\u256F\\u2594\\u2581\\u2590\\u258C\\u259B\\u259C\\u259D\\u2598\\u2588' +
-  '\\u23F5\\u00B7\\u25D0\\u25D3\\u25D1\\u25D2\\u273B\\u2736\\u273D\\u2722\\u25E6\\u203A\\u276F]+$');
-const CHROME_LINE = /esc to interrupt|bypass permissions|shift\+tab|tokens\)|\/status|\/effort|\/model|mcp server|claude max|working \(|thinking with|↓ ?\d+ tokens|^\W*\w+…|^.{0,15}…$|\[pasted text|paste again to expand|ctrl\+g to edit|turn completed in [\d.]+s/i;
-function cleanTui(s, prompt) {
-  // cursor-forward becomes a space (Ink uses it instead of spaces — without this
-  // words fuse: "AgreatTUIapp"), and cursor-positioning (CUP, up/down) becomes a
-  // newline — claude repaints whole screens with those, so stripping alone fuses
-  // every screen line into one mega-line and the filters below nuke real content
-  const lines = segmentAnsi(s).split(/[\r\n]+/);
-  const out = [];
-  const seen = new Set();
-  const norm = x => x.toLowerCase().replace(/[^a-z0-9]+/g, '');
-  const normPrompt = prompt ? norm(prompt) : '';
-  const promptKey = normPrompt.slice(0, 60) || null;
-  for (const l of lines) {
-    const t = l.trim();
-    if (!t) { out.push(''); continue; }
-    if (!/[a-zA-Z]{3,}/.test(t)) continue; // spinner shrapnel: "o7", "* h g", "n 61"
-    if (/^\W{0,3}\w+ for \d+s$/.test(t)) continue; // "✻ Cogitated for 5s"
-    if (SYMBOL_LINE.test(t)) continue;
-    if (CHROME_LINE.test(t)) continue;
-    const key = norm(t);
-    if (promptKey && key.includes(promptKey)) continue; // echo of the prompt itself
-    // partial input-box paints of a multi-line prompt ("Verdict: Concept", …)
-    if (normPrompt && key.length >= 6 && normPrompt.includes(key)) continue;
-    if (seen.has(key)) continue; // TUI repaints duplicate lines constantly
-    seen.add(key);
-    out.push(t.replace(/\s{2,}/g, ' '));
-  }
-  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-}
+// cleanTui doubles as the settle-detection signal (settledAnswer keys on its
+// length stability) — display-only cleanup improvements go in extractAnswer
+const { stripAnsi, segmentAnsi, cleanTui, extractAnswer } = require('./lib/screen');
+
+// ---------- CLI health (boot): missing binaries surface in the UI ----------
+const HEALTH = ROSTER.filter(r => ['claude', 'codex', 'grok'].includes(r.id)).map(r => {
+  let ok = false;
+  try { ok = IS_WIN ? fs.existsSync(r.cmd) : spawnSync('which', [r.cmd]).status === 0; } catch {}
+  return { id: r.id, label: r.label, ok, detail: ok ? '' : `${r.cmd} not found` };
+});
+slog(`cli health: ${HEALTH.map(h => `${h.id}=${h.ok ? 'ok' : 'MISSING'}`).join(' ')}`);
+// judge kinds with a reliable non-interactive mode (claude -p, codex exec).
+// grok has no clean headless path — deliberately not offered.
+const JUDGE_KINDS = HEALTH.filter(h => h.ok && ['claude', 'codex'].includes(h.id)).map(h => h.id);
+if (!JUDGE_KINDS.length) JUDGE_KINDS.push('claude');
 
 // ---------- server ----------
 const app = express();
@@ -297,6 +267,33 @@ function appendHistory(ts, text) {
   broadcastWs({ type: 'hist', item: { ts, text } });
 }
 
+// ---------- round history: prompt + all answers + winner, capped jsonl ----------
+const ROUNDS_FILE = path.join(DATA_DIR, 'rounds.jsonl');
+const ROUNDS_MAX = 200;
+function readRounds(n = ROUNDS_MAX) {
+  try {
+    return fs.readFileSync(ROUNDS_FILE, 'utf8').trim().split('\n')
+      .slice(-n).map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+let pendingCrown = null; // crown clicked before the round settled and got written
+function appendRound(entry) {
+  if (pendingCrown && pendingCrown.ts === entry.ts) { entry.winnerKind = pendingCrown.kind; pendingCrown = null; }
+  const items = readRounds().slice(-(ROUNDS_MAX - 1));
+  items.push(entry);
+  try { fs.writeFileSync(ROUNDS_FILE, items.map(r => JSON.stringify(r)).join('\n') + '\n'); } catch (e) { slog(`rounds write failed: ${e.message}`); }
+}
+function crownRound(ts, kind) {
+  if (!ts || !kindOf(kind)) return;
+  const items = readRounds();
+  const it = items.find(r => r.ts === ts);
+  if (!it) { pendingCrown = { ts, kind }; return; } // round still settling — applied on write
+  it.winnerKind = kind;
+  try { fs.writeFileSync(ROUNDS_FILE, items.map(r => JSON.stringify(r)).join('\n') + '\n'); } catch {}
+  broadcastWs({ type: 'crowned', ts, kind });
+}
+
 function readPlaybooks() {
   try {
     return fs.readdirSync(PLAYBOOK_DIR).filter(f => f.endsWith('.md')).map(f => ({
@@ -409,23 +406,26 @@ function roundResponses() {
   if (!lastRound) return [];
   return lastRound.targets.filter(id => sessions.has(id)).map(id => {
     const s = sessions.get(id);
-    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text: cleanTui(s.roundOut, lastRound.prompt), rawLen: s.roundOut.length };
+    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text: extractAnswer(s.roundOut, lastRound.prompt), rawLen: s.roundOut.length };
   });
 }
 
-// judge: headless claude -p over the last round (prompt guard keeps it non-agentic)
+// judge: headless CLI call over the last round (prompt guard keeps it non-agentic).
+// Answers go in BLIND — no model labels — so a judge can't favor its own entry;
+// the label legend is prepended to the verdict after it comes back.
 let judging = false;
-function runJudge() {
+function runJudge(kind) {
   if (judging) return;
+  if (!JUDGE_KINDS.includes(kind)) kind = JUDGE_KINDS[0];
   const responses = roundResponses().filter(r => r.text.length > 10);
   if (!lastRound || responses.length < 2) {
-    broadcastWs({ type: 'judgement', ok: false, text: 'Need a broadcast round with at least 2 answers to judge.' });
+    broadcastWs({ type: 'judgement', ok: false, kind, text: 'Need a broadcast round with at least 2 answers to judge.' });
     return;
   }
   judging = true;
-  const parts = responses.map((r, i) => `--- ANSWER ${i + 1} (${r.label}) ---\n${r.text.slice(0, 5000)}`);
+  const parts = responses.map((r, i) => `--- ANSWER ${i + 1} ---\n${r.text.slice(0, 5000)}`);
   const judgePrompt =
-`You are judging answers from different AI coding assistants to the same prompt. The transcripts may contain terminal rendering noise; judge the substance.
+`You are judging answers from different AI coding assistants to the same prompt. You are not told which assistant wrote which answer. The transcripts may contain terminal rendering noise; judge the substance.
 
 THE PROMPT WAS:
 ${(lastRound.prompt || '').slice(0, 2000)}
@@ -439,19 +439,24 @@ Give your verdict:
 
 Plain text only. Do not use any tools. Do not read or write any files. Reply directly.`;
 
+  // both judges read the prompt from stdin: claude -p, codex exec -
+  const cmd = kind === 'codex' ? 'codex exec -' : 'claude -p';
   const child = IS_WIN
-    ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env })
-    : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: __dirname, env: process.env });
+    ? spawn('cmd.exe', ['/c', cmd], { cwd: __dirname, env: process.env })
+    : spawn(USER_SHELL, ['-lc', cmd], { cwd: __dirname, env: process.env });
   let out = '', err = '';
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 180000);
   child.stdout.on('data', d => out += d);
   child.stderr.on('data', d => err += d);
   child.on('error', () => {});
-  child.stdin.on('error', () => {}); // claude dying mid-write must not crash the deck
+  child.stdin.on('error', () => {}); // the judge dying mid-write must not crash the deck
   child.on('close', () => {
     clearTimeout(timer);
     judging = false;
-    broadcastWs({ type: 'judgement', ok: !!out.trim(), text: out.trim() || ('Judge failed: ' + err.slice(0, 400)) });
+    const legend = responses.map((r, i) => `Answer ${i + 1} = ${r.label}`).join(' · ');
+    const verdict = stripAnsi(out).trim(); // codex exec output can carry ANSI color
+    broadcastWs({ type: 'judgement', ok: !!verdict, kind,
+      text: verdict ? `${legend}\n\n${verdict}` : ('Judge failed: ' + stripAnsi(err).slice(0, 400)) });
   });
   try { child.stdin.write(judgePrompt); child.stdin.end(); } catch {}
 }
@@ -472,7 +477,7 @@ function pushToNotes(fromId) {
   const s = sessions.get(fromId);
   if (!s) return;
   if (distilling) return broadcastWs({ type: 'notesError', text: 'still writing the last note — give it a few seconds' });
-  const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+  const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
   if (src.length < 40) {
     // tiny after cleanup = pane is mid-answer (spinners only) or truly idle
     const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
@@ -643,9 +648,23 @@ setInterval(() => {
       if (settledAnswer(s, r.prompt, st) === null && !quietDone) continue;
     }
     r.pending.delete(id); // settled, quiet, dead, or timed out — either way stop watching
+    // fixture harvesting: VIBEDECK_CAPTURE=1 dumps each settled pane's raw
+    // bytes so test/fixtures.js can grow from real transcripts
+    if (process.env.VIBEDECK_CAPTURE && s?.roundOut) {
+      try {
+        fs.mkdirSync(path.join(DATA_DIR, 'raw-rounds'), { recursive: true });
+        fs.writeFileSync(path.join(DATA_DIR, 'raw-rounds', `${r.ts}-${id}.txt`), s.roundOut);
+      } catch {}
+    }
     broadcastWs({ type: 'answerDone', pane: id });
   }
-  if (!r.pending.size) broadcastWs({ type: 'roundDone', ts: r.ts, count: r.targets.length });
+  if (!r.pending.size) {
+    const entry = { ts: r.ts, prompt: r.prompt, cwd: state.cwd, winnerKind: null,
+      responses: roundResponses().map(x => ({ pane: x.pane, kind: x.kind, label: x.label, text: x.text.slice(0, 16 * 1024) })) };
+    appendRound(entry);
+    broadcastWs({ type: 'roundSaved', round: entry });
+    broadcastWs({ type: 'roundDone', ts: r.ts, count: r.targets.length });
+  }
 }, 1000);
 
 for (const kind of state.kinds) spawnPane(kind);
@@ -659,6 +678,9 @@ wss.on('connection', (ws) => {
     cwd: state.cwd,
     recents: state.recents,
     history: readHistory(),
+    health: HEALTH,
+    judges: JUDGE_KINDS,
+    rounds: readRounds(50),
     playbooks: readPlaybooks(),
     pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
     models: modelsCfg,
@@ -703,7 +725,8 @@ wss.on('connection', (ws) => {
       const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
       lastRound = { ts: Date.now(), prompt: msg.data, targets,
                     pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0 }])) };
-      appendHistory(lastRound.ts, msg.data);
+      // noHist: promoted mega-prompts skip ↑/↓ history (rounds.jsonl still records them)
+      if (!msg.noHist) appendHistory(lastRound.ts, msg.data);
       for (const id of targets) {
         const t = sessions.get(id);
         t.roundOut = '';
@@ -715,7 +738,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'relay' && s) {
       const to = sessions.get(msg.to);
       if (!to || !to.alive || !to.proc) return;
-      const src = cleanTui(s.roundOut || s.buffer.slice(-24 * 1024)).slice(-12 * 1024);
+      const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
       if (!src) return;
       const fromLabel = kindOf(s.kind).label;
       const text = `Here is output from another AI assistant (${fromLabel}). Use it as context and act on it:\n\n${src}`.replace(/\r?\n/g, '\n');
@@ -727,8 +750,11 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'round') {
       ws.send(JSON.stringify({ type: 'round', prompt: lastRound?.prompt || '', ts: lastRound?.ts || 0, responses: roundResponses() }));
     } else if (msg.type === 'judge') {
-      broadcastWs({ type: 'judging' });
-      runJudge();
+      const kind = JUDGE_KINDS.includes(msg.kind) ? msg.kind : JUDGE_KINDS[0];
+      broadcastWs({ type: 'judging', kind });
+      runJudge(kind);
+    } else if (msg.type === 'crown') {
+      crownRound(msg.ts, msg.kind);
     } else if (msg.type === 'histdel') {
       const items = readHistory(10000).filter(h => h.ts !== msg.ts);
       try { fs.writeFileSync(HISTORY_FILE, items.map(h => JSON.stringify(h)).join('\n') + (items.length ? '\n' : '')); } catch {}
