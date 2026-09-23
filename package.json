@@ -1,11 +1,15 @@
 {
   "name": "vibedeck",
-  "version": "2.0.0",
-  "description": "A terminal cockpit for vibe coders — one prompt, every AI CLI answers at once",
-  "main": "server.js",
+  "version": "2.1.0",
+  "description": "A desktop workbench for AI coding tools",
+  "main": "desktop/main.cjs",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/extract-fixtures.js"
+    "test": "node test/extract-fixtures.js && node --test test/*.test.js",
+    "desktop": "electron .",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dmg --publish never",
+    "pack": "electron-builder --dir --publish never"
   },
   "license": "MIT",
   "type": "commonjs",
@@ -16,5 +20,54 @@
     "@xterm/xterm": "^6.0.0",
     "express": "^5.2.1",
     "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "electron": "^44.4.4",
+    "electron-builder": "^26.15.3"
+  },
+  "author": "7LayerLabs",
+  "build": {
+    "appId": "com.dbtech45.vibedeck",
+    "productName": "VibeDeck",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@lydell/**/*"
+    ],
+    "npmRebuild": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "lib/**/*",
+      "public/**/*",
+      "server.js",
+      "meter-data.js",
+      "playbooks/**/*",
+      "pipelines/**/*",
+      "icon.png",
+      "vibedeck.ico",
+      "package.json",
+      "LICENSE"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "vibedeck.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true
+    },
+    "artifactName": "VibeDeck-${version}-${os}-${arch}.${ext}"
   }
 }
