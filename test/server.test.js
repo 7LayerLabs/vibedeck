@@ -27,6 +27,12 @@ test('local server authenticates HTTP and WebSockets; persists custom pipelines'
   const connectionSaved=waitMessage('connectionSaved');
   socket.send(JSON.stringify({type:'connectionSave',connection:{name:'Fixture local model',baseUrl:`http://127.0.0.1:${provider.address().port}/v1`,protocol:'openai',model:'fixture-model'}}));
   const connectionId=(await connectionSaved).id;
+  const tested=waitMessage('connectionTestResult');
+  socket.send(JSON.stringify({type:'connectionTest',id:connectionId}));
+  assert.equal((await tested).ok,true);
+  const invalidTest=waitMessage('connectionTestResult');
+  socket.send(JSON.stringify({type:'connectionTest',id:'missing'}));
+  assert.equal((await invalidTest).ok,false);
   const completed=new Promise((resolve,reject)=>{const receive=raw=>{const msg=JSON.parse(raw);if(msg.type==='customPipelineStatus'&&['done','error'].includes(msg.state)){socket.off('message',receive);msg.state==='done'?resolve(msg):reject(Error(msg.text));}};socket.on('message',receive);});
   socket.send(JSON.stringify({type:'customPipelineStart',definition:{name:'Local review',steps:[{kind:'api',role:'Review',model:'',connectionId}]},prompt:'Review this sample.'}));
   assert.equal((await completed).outputs[0].text,'Fixture model review');

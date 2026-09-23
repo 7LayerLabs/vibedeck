@@ -58,3 +58,9 @@ Presets cover Grok/xAI, OpenAI, Anthropic, Ollama and LM Studio, plus custom com
 API keys are session-only by default. The desktop app can remember them using Electron safeStorage backed by the operating system. Keys are excluded from connection metadata and all renderer responses. Changing the destination requires entering a key again. In browser development, encrypted persistence is disabled.
 
 Provider adapters are fixture-tested. Actual account/model access, local-model availability and live CLI-version compatibility still require release validation.
+
+### Verify your connection
+
+In **Connections**, use **Sign in** to open an installed provider's own CLI login flow. After login, open its terminal or select it in a pipeline. For API/local models, save the endpoint and exact chat model ID, then click **Test connection** (a small real request using normal provider usage). **Use model** opens a one-stage pipeline ready for your prompt. Add stages to mix providers. API/local stages produce text and proposed code; CLI stages can operate on project files with provider permissions.
+
+For an opt-in live Codex → Claude → Grok integration check, run `node test/live-pipeline.cjs`. It uses existing account sign-ins and a disposable temporary project.

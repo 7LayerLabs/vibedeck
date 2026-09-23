@@ -743,6 +743,22 @@ wss.on('connection', (ws) => {
   function handleMessage(msg, ws) {
     if(!msg || typeof msg!=='object')return;
     const s = sessions.get(msg.pane);
+    if(msg.type==='connectionTest'){
+      if(ws.connectionTest){ws.send(JSON.stringify({type:'connectionError',text:'A connection test is already running.'}));return;}
+      if(customRunner.run){ws.send(JSON.stringify({type:'connectionError',text:'Finish or stop the pipeline before testing a connection.'}));return;}
+      const task=executeApiStage({step:{connectionId:msg.id},prompt:'Reply with a short greeting to confirm this connection works.',connections,timeoutMs:30000});
+      ws.connectionTest=task;
+      const cancel=()=>task.cancel();ws.once('close',cancel);
+      task.promise.then(answer=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionTestResult',id:msg.id,ok:true,text:'Connected. Model replied: '+answer.slice(0,500)}));}).catch(error=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionTestResult',id:msg.id,ok:false,text:error.message}));}).finally(()=>{ws.connectionTest=null;ws.off('close',cancel);});return;
+    }
+    if(msg.type==='cliSignIn'){
+      const args={claude:'auth login',codex:'login',grok:'login'}[msg.kind];
+      if(!args)return;
+      if(customRunner.run || sessions.size>=MAX_PANES){ws.send(JSON.stringify({type:'connectionError',text:'Stop the pipeline and free a terminal pane before signing in.'}));return;}
+      if(!HEALTH.find(h=>h.id===msg.kind)?.ok){ws.send(JSON.stringify({type:'connectionError',text:`Install the ${msg.kind} CLI first, then restart VibeDeck.`}));return;}
+      const id=spawnPane(msg.kind,undefined,args);saveState();broadcastWs({type:'paneAdded',pane:paneInfo(id)});
+      ws.send(JSON.stringify({type:'cliSignInOpened'}));return;
+    }
     if(['connectionSave','connectionRemove'].includes(msg.type)){
       if(customRunner.run){ws.send(JSON.stringify({type:'connectionError',text:'Finish or stop the pipeline before changing connections.'}));return;}
       const operation=msg.type==='connectionSave'?connections.save(msg.connection):connections.remove(msg.id);

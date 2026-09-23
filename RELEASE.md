@@ -18,7 +18,7 @@ Version 2.1.0 adds the approved light workbench, supplied VibeDeck logo, configu
 
 - Windows signing identity and signed installer validation.
 - macOS builds, signing with Developer ID, notarization, and clean-device launch validation on Apple silicon and Intel.
-- Live authenticated Claude/Codex workflow validation for the supported CLI versions and available models. Test fixtures do not establish provider account access.
+- Broader authenticated workflow validation across supported CLI versions, model choices and account plans. The default-model Claude/Codex/Grok handoff passed locally; that does not establish access for every account or model.
 - Clean-device installer/update/uninstall checks and long-running terminal/pipeline recovery checks.
 - Review and merge the application and product-page pull requests; verify the deployed /vibedeck route.
 - Publish verified installers and checksums, then enable direct download URLs on the product page. Do not advertise unbuilt, unsigned or untested artifacts as a stable release.
@@ -33,3 +33,12 @@ The desktop wrapper does not install or authenticate third-party CLIs automatica
 ## Expanded provider connections
 
 Added Grok CLI pipelines, Anthropic/OpenAI-compatible API adapters, local Ollama/LM Studio presets, custom endpoints and optional OS-encrypted API-key persistence. Subscription sign-in stays inside provider-supported CLIs. API stages return text/proposed code; they do not edit files. New tests cover protocol payloads, keys excluded from metadata, endpoint changes, cancellation and incomplete/error responses. No live provider credentials were used in these tests.
+
+## Live verification — 2026-09-23
+
+- Claude, Codex and Grok returned actual answers through the production CLI adapter using existing sign-ins.
+- `node test/live-pipeline.cjs` passed: Codex planned, Claude created a marker file, Grok read/reviewed it, and the test independently checked its exact contents. This optional manual check consumes account usage and works only inside its own temporary directory.
+- The UI now opens each installed provider's login command, tests saved API/local connections with a real prompt, and opens a one-stage session through Use model.
+- Ollama was verified through the browser UI, connection save, HTTP adapter, pipeline completion and visible answer. Hosted API adapters still require validation with the user's own API keys; automated tests exercise both protocol formats.
+- A recovered Claude tool denial now appears as a review note instead of discarding a successful result. Provider permissions remain in place.
+- The Windows installer was rebuilt. Public release, macOS signing/build validation and hosted-key account testing remain pending.
