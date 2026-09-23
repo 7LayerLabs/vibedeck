@@ -21,5 +21,14 @@ test('local server authenticates HTTP and WebSockets; persists custom pipelines'
   const saved=new Promise(resolve=>socket.once('message',m=>resolve(JSON.parse(m))));
   socket.send(JSON.stringify({type:'customPipelineSave',definition:{name:'Test chain',steps:[{role:'Plan',kind:'codex',model:'gpt-6-astra'}]}}));
   assert.equal((await saved).items[0].name,'Test chain');assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'data/custom-pipelines.json')))[0].name,'Test chain');
+  const provider=require('node:http').createServer((req,res)=>{req.resume();req.on('end',()=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{message:{content:'Fixture model review'},finish_reason:'stop'}]}));});});
+  await new Promise(resolve=>provider.listen(0,'127.0.0.1',resolve));t.after(()=>provider.close());
+  const waitMessage=type=>new Promise(resolve=>{const receive=raw=>{const msg=JSON.parse(raw);if(msg.type===type){socket.off('message',receive);resolve(msg);}};socket.on('message',receive);});
+  const connectionSaved=waitMessage('connectionSaved');
+  socket.send(JSON.stringify({type:'connectionSave',connection:{name:'Fixture local model',baseUrl:`http://127.0.0.1:${provider.address().port}/v1`,protocol:'openai',model:'fixture-model'}}));
+  const connectionId=(await connectionSaved).id;
+  const completed=new Promise((resolve,reject)=>{const receive=raw=>{const msg=JSON.parse(raw);if(msg.type==='customPipelineStatus'&&['done','error'].includes(msg.state)){socket.off('message',receive);msg.state==='done'?resolve(msg):reject(Error(msg.text));}};socket.on('message',receive);});
+  socket.send(JSON.stringify({type:'customPipelineStart',definition:{name:'Local review',steps:[{kind:'api',role:'Review',model:'',connectionId}]},prompt:'Review this sample.'}));
+  assert.equal((await completed).outputs[0].text,'Fixture model review');
 });
 

@@ -29,3 +29,7 @@ Local Windows candidate: `dist/VibeDeck-2.1.0-win-x64.exe` (unsigned).
 GitHub Actions uploads platform artifacts for review and does not publish releases automatically.
 
 The desktop wrapper does not install or authenticate third-party CLIs automatically. Provider accounts, permissions and model availability remain under the user's control.
+
+## Expanded provider connections
+
+Added Grok CLI pipelines, Anthropic/OpenAI-compatible API adapters, local Ollama/LM Studio presets, custom endpoints and optional OS-encrypted API-key persistence. Subscription sign-in stays inside provider-supported CLIs. API stages return text/proposed code; they do not edit files. New tests cover protocol payloads, keys excluded from metadata, endpoint changes, cancellation and incomplete/error responses. No live provider credentials were used in these tests.

@@ -5,7 +5,7 @@ const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const definition={name:'Astra to Claude',steps:[{role:'Plan',kind:'codex',model:'gpt-6-astra'},{role:'Build',kind:'claude',model:''}]};
 test('validates providers, models and stage counts',()=>{
   assert.equal(validatePipeline(definition).steps[0].model,'gpt-6-astra');
-  for(const steps of [[],[{role:'Build',kind:'grok'}],[{role:'Build',kind:'codex',model:'x; whoami'}]])assert.throws(()=>validatePipeline({name:'Bad',steps}));
+  for(const steps of [[],[{role:'Build',kind:'unsupported'}],[{role:'Build',kind:'codex',model:'x; whoami'}]])assert.throws(()=>validatePipeline({name:'Bad',steps}));
 });
 test('hands off only after approval and carries previous output',async()=>{
   const calls=[],events=[];

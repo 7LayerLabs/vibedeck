@@ -133,12 +133,25 @@ const server = app.listen(PORT, '127.0.0.1', () => {
 });
 const wss = new WebSocketServer({ server, maxPayload: 22*1024*1024, verifyClient: info => access.valid(info.req) && !!info.req.headers.origin });
 
-const {PipelineRunner,validatePipeline}=require('./lib/pipeline-runner');
+const {PipelineRunner,validatePipeline,executeStage}=require('./lib/pipeline-runner');
+const {Connections,executeApiStage}=require('./lib/api-connections');
+const vaultRequests=new Map();
+function vault(action,id,key){
+  if(!process.env.VIBEDECK_VAULT || !process.send)return Promise.reject(Error('Encrypted key storage is available in the desktop app. Use a session-only key here.'));
+  const requestId=require('node:crypto').randomUUID();
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{vaultRequests.delete(requestId);reject(Error('Secure key storage timed out.'));},15000);
+    vaultRequests.set(requestId,{resolve,reject,timer});process.send({type:'vault',requestId,action,id,key});
+  });
+}
+process.on('message',message=>{if(message?.type!=='vaultResult')return;const request=vaultRequests.get(message.requestId);if(!request)return;clearTimeout(request.timer);vaultRequests.delete(message.requestId);message.error?request.reject(Error(message.error)):request.resolve(message.result);});
+const connections=new Connections(path.join(DATA_DIR,'connections.json'),vault);
+
 const CUSTOM_PIPELINES_FILE=path.join(DATA_DIR,'custom-pipelines.json');
 let customDefinitions=[];
 try {customDefinitions=JSON.parse(fs.readFileSync(CUSTOM_PIPELINES_FILE,'utf8')).map(validatePipeline);}catch{}
 let customStatus={state:'idle',outputs:[]};
-const customRunner=new PipelineRunner({resolveCommand:CLI,emit:status=>{
+const customRunner=new PipelineRunner({resolveCommand:kind=>kindOf(kind)?.cmd||CLI(kind),execute:args=>args.step.kind==='api'?executeApiStage({...args,connections}):executeStage(args),emit:status=>{
   customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
   if(status.state==='done') {
     const entry={ts:Date.now(),prompt:status.name,cwd:state.cwd,winnerKind:null,responses:status.outputs.map((o,i)=>({pane:`pipeline-${i}`,kind:o.kind,label:`${o.role} · ${o.kind}`,text:o.text.slice(0,16*1024)}))};
@@ -696,7 +709,7 @@ if(!process.env.VIBEDECK_NO_PANES) for (const kind of state.kinds) {
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
-    customDefinitions, customStatus,
+    customDefinitions, customStatus, connections:connections.list(), secureKeyStorage:!!process.env.VIBEDECK_VAULT,
     panes: [...sessions.keys()].map(paneInfo),
     roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: false, flags: '' })),
     maxPanes: MAX_PANES,
@@ -730,12 +743,17 @@ wss.on('connection', (ws) => {
   function handleMessage(msg, ws) {
     if(!msg || typeof msg!=='object')return;
     const s = sessions.get(msg.pane);
+    if(['connectionSave','connectionRemove'].includes(msg.type)){
+      if(customRunner.run){ws.send(JSON.stringify({type:'connectionError',text:'Finish or stop the pipeline before changing connections.'}));return;}
+      const operation=msg.type==='connectionSave'?connections.save(msg.connection):connections.remove(msg.id);
+      operation.then(record=>{broadcastWs({type:'connections',items:connections.list(),text:msg.type==='connectionSave'?'Connection saved.':'Connection removed.'});if(record && ws.readyState===1)ws.send(JSON.stringify({type:'connectionSaved',id:record.id}));}).catch(error=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionError',text:error.message}));});return;
+    }
     if(msg.type==='customPipelineSave'){
       try {const def=validatePipeline(msg.definition);customDefinitions=[...customDefinitions.filter(p=>p.name!==def.name),def].slice(-30);fs.writeFileSync(CUSTOM_PIPELINES_FILE,JSON.stringify(customDefinitions,null,2));broadcastWs({type:'customDefinitions',items:customDefinitions});}catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
     }
     if(['customPipelineStart','customPipelineResume','customPipelineCancel'].includes(msg.type)){
       try {
-        if(msg.type==='customPipelineStart'){if(state.cwd===HOME)throw Error('Choose a project folder before running a pipeline.');if(pipeline || lastRound?.pending?.size)throw Error('Finish the active round first.');customRunner.start(msg.definition,msg.prompt,state.cwd);}
+        if(msg.type==='customPipelineStart'){if(state.cwd===HOME && msg.definition?.steps?.some(step=>step.kind!=='api'))throw Error('Choose a project folder before running CLI stages.');if(pipeline || lastRound?.pending?.size)throw Error('Finish the active round first.');customRunner.start(msg.definition,msg.prompt,state.cwd);}
         else if(msg.type==='customPipelineResume')customRunner.resume();else customRunner.cancel();
       }catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
     }

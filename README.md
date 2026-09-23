@@ -24,11 +24,11 @@ For browser development, `npm start` prints a private localhost session link. Op
 
 ## Configurable pipelines
 
-Choose one to eight Plan, Build or Review stages. Each stage independently selects Claude or Codex and an optional model ID. For example: Codex `gpt-6-astra` plans, Claude builds, and Codex reviews. An empty model uses the installed CLI's default. Grok remains available in terminals; automated Grok stages are not supported by this runner.
+Choose one to eight Plan, Build or Review stages. Each stage independently selects Claude, Codex, Grok, or a saved API/local connection and an optional model ID. For example: Codex `gpt-6-astra` plans, Claude builds, and Codex reviews. An empty model uses the installed CLI's default. Grok CLI stages require a version supporting --prompt-file and --permission-mode. API stages use Anthropic Messages or OpenAI-compatible chat completions.
 
-Save named pipelines locally, enter your request, and run. Each stage is a separate noninteractive CLI process. The runner uses process exit status and the final answer, not terminal silence, to decide completion. It passes prior outputs to the next stage through stdin. Review each answer and approve the next stage explicitly. Stop terminates the active process tree and drops remaining stages. Failures, denied Claude permissions and timeouts halt the chain.
+Save named pipelines locally, enter your request, and run. CLI stages run as separate noninteractive processes; API stages make cancellable requests to the configured endpoint. The runner uses process exit status and the final answer, not terminal silence, to decide completion. It passes prior outputs to the next stage through stdin. Review each answer and approve the next stage explicitly. Stop terminates the active process tree and drops remaining stages. Failures, denied Claude permissions and timeouts halt the chain.
 
-Codex Plan/Review use the read-only sandbox; Build uses workspace-write. Claude uses plan/acceptEdits permission modes respectively. Provider policy restrictions still apply. Choose a project folder before starting a pipeline.
+Codex Plan/Review use the read-only sandbox; Build uses workspace-write. Claude uses plan/acceptEdits permission modes respectively. Provider policy restrictions still apply. Choose a project folder before starting a pipeline with CLI stages. API stages receive only the supplied prompt and preceding outputs; they return text/proposed code and cannot access or edit project files.
 
 ## Local data and connection protection
 
@@ -48,3 +48,13 @@ npm run dist:mac
 Build macOS packages on macOS. GitHub Actions builds Windows x64, macOS Apple silicon and macOS Intel artifacts. These are unsigned validation artifacts until signing credentials are configured. A successful package build alone is not proof of a signed or notarized public release.
 
 See [RELEASE.md](RELEASE.md) for current validation and release requirements.
+
+## Connections
+
+The Connections view separates supported provider CLI sign-in from API credentials. CLI subscription eligibility follows the provider account; VibeDeck does not convert subscription tokens into API keys. API charges remain separate.
+
+Presets cover Grok/xAI, OpenAI, Anthropic, Ollama and LM Studio, plus custom compatible endpoints. Model IDs are supplied by the user. Hosted endpoints require HTTPS; local loopback endpoints may use HTTP without a key. Redirects are rejected to avoid forwarding credentials to another destination.
+
+API keys are session-only by default. The desktop app can remember them using Electron safeStorage backed by the operating system. Keys are excluded from connection metadata and all renderer responses. Changing the destination requires entering a key again. In browser development, encrypted persistence is disabled.
+
+Provider adapters are fixture-tested. Actual account/model access, local-model availability and live CLI-version compatibility still require release validation.
