@@ -6,19 +6,29 @@ const express = require('express');
 const { WebSocketServer } = require('ws');
 const pty = require('@lydell/node-pty');
 
-const PORT = 18801;
+const PORT = Number(process.env.VIBEDECK_PORT ?? 18801);
+const USER_DATA = process.env.VIBEDECK_DATA_DIR || __dirname;
+fs.mkdirSync(USER_DATA, {recursive:true});
 const HOME = process.env.USERPROFILE || process.env.HOME;
-const STATE_FILE = path.join(__dirname, 'state.json');
-const LEGACY_PANES = path.join(__dirname, 'panes.json');
-const DATA_DIR = path.join(__dirname, 'data');
+const STATE_FILE = path.join(USER_DATA, 'state.json');
+const LEGACY_PANES = path.join(USER_DATA, 'panes.json');
+const DATA_DIR = path.join(USER_DATA, 'data');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.jsonl');
-const PLAYBOOK_DIR = path.join(__dirname, 'playbooks');
-const PIPELINE_DIR = path.join(__dirname, 'pipelines');
+const PLAYBOOK_DIR = path.join(USER_DATA, 'playbooks');
+const PIPELINE_DIR = path.join(USER_DATA, 'pipelines');
 const IMAGE_DIR = path.join(DATA_DIR, 'images');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(PLAYBOOK_DIR, { recursive: true });
 fs.mkdirSync(PIPELINE_DIR, { recursive: true });
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
+
+// Seed editable examples into the writable profile when running a packaged app.
+if(USER_DATA!==__dirname) for(const folder of ['playbooks','pipelines']) {
+  for(const file of fs.readdirSync(path.join(__dirname,folder))) {
+    const destination=path.join(USER_DATA,folder,file);
+    if(!fs.existsSync(destination))fs.copyFileSync(path.join(__dirname,folder,file),destination);
+  }
+}
 
 // The kinds of CLI a pane can run. Any kind can run in multiple panes at once.
 // ready: the pane isn't accepting typed prompts until this paints (dialogs/init eat input).
@@ -26,20 +36,20 @@ fs.mkdirSync(IMAGE_DIR, { recursive: true });
 const IS_WIN = process.platform === 'win32';
 const NPM_BIN = path.join(process.env.APPDATA || '', 'npm');
 // windows needs the npm .cmd shims / grok.exe path; mac & linux find them on PATH
-const CLI = name => IS_WIN ? path.join(NPM_BIN, `${name}.cmd`) : name;
+const CLI = name => {
+  if(!IS_WIN)return name;
+  try {const found=spawnSync('where.exe',[name],{encoding:'utf8',windowsHide:true}).stdout?.trim().split(/\r?\n/).find(p=>/\.(cmd|exe)$/i.test(p));if(found)return found;} catch {}
+  return path.join(NPM_BIN,`${name}.cmd`);
+};
 const USER_SHELL = process.env.SHELL || '/bin/zsh';
-// flags: every pane launches in its CLI's skip-permissions mode
+// Provider permission prompts remain enabled in every terminal.
 const ROSTER = [
-  { id: 'claude', label: 'CLAUDE', cmd: CLI('claude'), flags: '--dangerously-skip-permissions', ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
-  { id: 'codex',  label: 'CODEX',  cmd: CLI('codex'),  flags: '--dangerously-bypass-approvals-and-sandbox', ready: /gpt-[\d.]|› / },
-  { id: 'grok',   label: 'GROK',   cmd: IS_WIN ? path.join(HOME, '.grok', 'bin', 'grok.exe') : 'grok', flags: '--always-approve', ready: /grok-|Shift\+Tab/i },
+  { id: 'claude', label: 'CLAUDE', cmd: CLI('claude'), ready: /⏵⏵|Try\s*"|\?\s*for\s*shortcuts/ },
+  { id: 'codex',  label: 'CODEX',  cmd: CLI('codex'), ready: /gpt-[\d.]|› / },
+  { id: 'grok',   label: 'GROK',   cmd: IS_WIN ? path.join(HOME, '.grok', 'bin', 'grok.exe') : 'grok', ready: /grok-|Shift\+Tab/i },
   { id: 'shell',  label: 'SHELL',  cmd: IS_WIN ? 'powershell -NoLogo' : USER_SHELL, ready: IS_WIN ? /PS .*>/ : undefined },
   { id: 'notes',  label: 'NOTES' }, // PTY-less: a plain-english notepad pane
 ];
-const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
-// claude's bypass-mode acceptance dialog defaults to "No, exit" — Enter would
-// kill the pane; typing "2" selects "Yes, I accept"
-const BYPASS_WARN = /Bypass\s*Permissions\s*mode/i;
 const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
 const MAX_PANES = 5;
 const BUFFER_MAX = 400 * 1024;
@@ -91,6 +101,9 @@ if (!JUDGE_KINDS.length) JUDGE_KINDS.push('claude');
 
 // ---------- server ----------
 const app = express();
+const sessionToken = require('node:crypto').randomBytes(32).toString('hex');
+const access = require('./lib/local-access').localAccess(sessionToken,()=>server.address()?.port);
+app.use(access.middleware);
 // no-cache so a plain reload always gets the current UI after an upgrade
 app.use(express.static(path.join(__dirname, 'public'), {
   etag: false, lastModified: false,
@@ -113,9 +126,26 @@ app.get('/api/meter', (req, res) => {
 });
 app.get('/meter', (req, res) => res.sendFile(path.join(__dirname, 'public', 'meter.html')));
 
-// localhost only: panes run CLIs in skip-permissions mode — never expose that to the LAN
-const server = app.listen(PORT, '127.0.0.1', () => slog(`VibeDeck on http://localhost:${PORT}`));
-const wss = new WebSocketServer({ server });
+// Localhost only. HTTP and WebSocket clients must authenticate to this launch.
+const server = app.listen(PORT, '127.0.0.1', () => {
+  const url = `http://127.0.0.1:${server.address().port}/session?token=${sessionToken}`;
+  if(process.send) process.send({type:'ready',url}); else console.log(`Open VibeDeck: ${url}`);
+});
+const wss = new WebSocketServer({ server, maxPayload: 22*1024*1024, verifyClient: info => access.valid(info.req) && !!info.req.headers.origin });
+
+const {PipelineRunner,validatePipeline}=require('./lib/pipeline-runner');
+const CUSTOM_PIPELINES_FILE=path.join(DATA_DIR,'custom-pipelines.json');
+let customDefinitions=[];
+try {customDefinitions=JSON.parse(fs.readFileSync(CUSTOM_PIPELINES_FILE,'utf8')).map(validatePipeline);}catch{}
+let customStatus={state:'idle',outputs:[]};
+const customRunner=new PipelineRunner({resolveCommand:CLI,emit:status=>{
+  customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
+  if(status.state==='done') {
+    const entry={ts:Date.now(),prompt:status.name,cwd:state.cwd,winnerKind:null,responses:status.outputs.map((o,i)=>({pane:`pipeline-${i}`,kind:o.kind,label:`${o.role} · ${o.kind}`,text:o.text.slice(0,16*1024)}))};
+    appendRound(entry);broadcastWs({type:'roundSaved',round:entry});
+  }
+}});
+app.get('/api/desktop-health',(req,res)=>res.json({ok:true,version:require('./package.json').version,providers:HEALTH}));
 
 const sessions = new Map(); // instance id -> session (insertion order = pane order)
 let instanceSeq = 0;
@@ -146,7 +176,7 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
                        roundOut: '', inRound: false, lastDataTs: 0, queue: [] });
     return id;
   }
-  yolo = yolo !== false; // skip-permissions on unless the pane's toggle turned it off
+  yolo = false; // Release builds retain the provider permission checks.
   const cmd = entry.cmd + (entry.flags && yolo ? ' ' + entry.flags : '') + (extraArgs ? ' ' + extraArgs : '');
   slog(`spawn ${id}: ${cmd}`);
   let proc;
@@ -179,19 +209,6 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
     session.lastDataTs = Date.now();
     session.buffer = (session.buffer + data).slice(-BUFFER_MAX);
     if (session.inRound) session.roundOut = (session.roundOut + data).slice(-ROUND_MAX);
-    // auto-clear claude's startup trust dialog — it eats typed prompts otherwise
-    if (kindId === 'claude' && !session.trustHandled && TRUST_DIALOG.test(stripAnsi(session.buffer))) {
-      session.trustHandled = true;
-      slog(`trust dialog cleared for ${id}`);
-      setTimeout(() => { if (session.alive) proc.write('\r'); }, 400);
-    }
-    // auto-accept the bypass-permissions warning (first run only; "2" = Yes)
-    if (kindId === 'claude' && !session.bypassHandled && session.buffer.length < 20000
-        && BYPASS_WARN.test(stripAnsi(session.buffer)) && /yes, i accept/i.test(stripAnsi(session.buffer))) {
-      session.bypassHandled = true;
-      slog(`bypass warning accepted for ${id}`);
-      setTimeout(() => { if (session.alive) proc.write('2'); }, 400);
-    }
     session.pendingOut += data;
     if (!session.flushTimer) session.flushTimer = setTimeout(() => { session.flushTimer = null; flushOut(id, session); }, FLUSH_MS);
   });
@@ -304,10 +321,10 @@ function readPlaybooks() {
 }
 
 // ---------- model lists (models.json = source of truth for the knob dropdowns) ----------
-const MODELS_FILE = path.join(__dirname, 'models.json');
+const MODELS_FILE = path.join(USER_DATA, 'models.json');
 let modelsCfg = {
   claude: { models: ['fable', 'opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  codex:  { models: ['gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
+  codex:  { models: ['gpt-6-astra', 'gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
   grok:   { models: ['grok-4.5', 'grok-composer-2.5-fast'], efforts: ['low', 'medium', 'high'] },
 };
 try { modelsCfg = { ...modelsCfg, ...JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) }; } catch {}
@@ -647,7 +664,12 @@ setInterval(() => {
       const quietDone = s.roundOut.length && Date.now() - s.lastDataTs > 15000;
       if (settledAnswer(s, r.prompt, st) === null && !quietDone) continue;
     }
-    r.pending.delete(id); // settled, quiet, dead, or timed out — either way stop watching
+    if(!s?.alive || gaveUp){
+      r.pending.delete(id);r.failed=true;
+      broadcastWs({type:'answerFailed',pane:id,text:gaveUp?'Response timed out.':'Terminal exited before completing.'});
+      continue;
+    }
+    r.pending.delete(id);
     // fixture harvesting: VIBEDECK_CAPTURE=1 dumps each settled pane's raw
     // bytes so test/fixtures.js can grow from real transcripts
     if (process.env.VIBEDECK_CAPTURE && s?.roundOut) {
@@ -663,17 +685,20 @@ setInterval(() => {
       responses: roundResponses().map(x => ({ pane: x.pane, kind: x.kind, label: x.label, text: x.text.slice(0, 16 * 1024) })) };
     appendRound(entry);
     broadcastWs({ type: 'roundSaved', round: entry });
-    broadcastWs({ type: 'roundDone', ts: r.ts, count: r.targets.length });
+    broadcastWs({ type: r.failed?'roundFailed':'roundDone', ts: r.ts, count: r.targets.length });
   }
 }, 1000);
 
-for (const kind of state.kinds) spawnPane(kind);
+if(!process.env.VIBEDECK_NO_PANES) for (const kind of state.kinds) {
+  if(kind==='notes' || kind==='shell' || HEALTH.find(h=>h.id===kind)?.ok) spawnPane(kind);
+}
 
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
+    customDefinitions, customStatus,
     panes: [...sessions.keys()].map(paneInfo),
-    roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: !!r.flags, flags: r.flags || '' })),
+    roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: false, flags: '' })),
     maxPanes: MAX_PANES,
     cwd: state.cwd,
     recents: state.recents,
@@ -703,7 +728,18 @@ wss.on('connection', (ws) => {
   });
 
   function handleMessage(msg, ws) {
+    if(!msg || typeof msg!=='object')return;
     const s = sessions.get(msg.pane);
+    if(msg.type==='customPipelineSave'){
+      try {const def=validatePipeline(msg.definition);customDefinitions=[...customDefinitions.filter(p=>p.name!==def.name),def].slice(-30);fs.writeFileSync(CUSTOM_PIPELINES_FILE,JSON.stringify(customDefinitions,null,2));broadcastWs({type:'customDefinitions',items:customDefinitions});}catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
+    }
+    if(['customPipelineStart','customPipelineResume','customPipelineCancel'].includes(msg.type)){
+      try {
+        if(msg.type==='customPipelineStart'){if(state.cwd===HOME)throw Error('Choose a project folder before running a pipeline.');if(pipeline || lastRound?.pending?.size)throw Error('Finish the active round first.');customRunner.start(msg.definition,msg.prompt,state.cwd);}
+        else if(msg.type==='customPipelineResume')customRunner.resume();else customRunner.cancel();
+      }catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
+    }
+    if(customRunner.run && ['broadcast','relay','pipeline','setcwd','restart','replace','yolo','input','image','judge','updateModels','toNotes'].includes(msg.type)){ws.send(JSON.stringify({type:'customPipelineError',text:'Finish or cancel the pipeline before changing the workspace or running other work.'}));return;}
 
     if (msg.type === 'input' && s && s.alive && s.proc) {
       s.proc.write(msg.data);
@@ -722,7 +758,10 @@ wss.on('connection', (ws) => {
       s.proc.write(file + ' ');
       broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
+      if(!Array.isArray(msg.targets)||typeof msg.data!=='string'||!msg.data.trim()||msg.data.length>32000)return;
+      if(lastRound?.pending?.size)return ws.send(JSON.stringify({type:'customPipelineError',text:'Wait for the current round to finish.'}));
       const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
+      if(!targets.length)return ws.send(JSON.stringify({type:'customPipelineError',text:'Open a live terminal and include it in the broadcast first.'}));
       lastRound = { ts: Date.now(), prompt: msg.data, targets,
                     pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0 }])) };
       // noHist: promoted mega-prompts skip ↑/↓ history (rounds.jsonl still records them)
@@ -767,7 +806,7 @@ wss.on('connection', (ws) => {
       const prompt = String(msg.prompt || '').trim();
       if (!prompt) return;
       appendHistory(Date.now(), prompt);
-      startPipeline(msg.name, prompt);
+      ws.send(JSON.stringify({type:'customPipelineError',text:'Use the pipeline builder to select stages and review handoffs.'}));
     } else if (msg.type === 'notesSet') {
       writeNotes(String(msg.text ?? ''));
       broadcastWs({ type: 'notes', text: readNotes() });
@@ -781,7 +820,7 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'modelsUpdating' });
       updateModels();
     } else if (msg.type === 'pipelineCancel') {
-      if (pipeline) { slog(`pipeline cancelled: ${pipeline.def.name}`); endPipeline('cancelled', 'cancelled — the current pane keeps running, later steps are dropped'); }
+      if(pipeline){const active=sessions.get(pipeline.paneId);active?.proc?.kill();if(active)active.queue=[];endPipeline('cancelled','Pipeline process stopped.');}
     } else if (msg.type === 'setcwd') {
       let dir = String(msg.dir || '').trim().replace(/^"|"$/g, '');
       if (!dir) return;
@@ -850,3 +889,14 @@ wss.on('connection', (ws) => {
     }
   }
 });
+
+function shutdown() {
+  for(const s of sessions.values()) { try { s.proc?.kill(); } catch {} }
+  if(customRunner) customRunner.cancel();
+  server.close();
+  setTimeout(()=>process.exit(0),300).unref();
+}
+process.on('message', msg=>{if(msg?.type==='shutdown')shutdown();});
+process.on('SIGTERM',shutdown);
+process.on('SIGINT',shutdown);
+process.on('disconnect',shutdown);

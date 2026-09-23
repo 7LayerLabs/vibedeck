@@ -4,3 +4,6 @@ state.json
 panes.json
 models.json
 .gstack/
+
+dist/
+release-checks/
