@@ -1,66 +1,77 @@
 # VibeDeck
 
-A local desktop workbench for AI coding tools. Windows and macOS packaging is included; the public product page is planned at https://dbtech45.com/vibedeck.
+A local desktop workbench for AI coding tools. Run Claude Code, Codex and Grok side by side, send one prompt to all of them, compare the answers, and chain them into reviewed pipelines. Windows and macOS packaging is included; the public product page is planned at https://dbtech45.com/vibedeck.
 
-## Desktop development
+## Run it
 
-Install Node.js 22 or newer, then:
+Install Node.js 22 or newer. On Windows, double-click `VibeDeck.bat` (it installs packages the first time). Or:
 
 ```sh
 npm ci
 npm run desktop
 ```
 
-VibeDeck bundles its own desktop runtime in installers. AI CLIs are separate: install and authenticate Claude Code, Codex CLI, or Grok before using their terminals. Provider subscriptions and usage charges are separate. Model access depends on your provider account and CLI version.
+VibeDeck bundles its own desktop runtime in installers. The AI CLIs are separate: install and sign in to Claude Code, Codex CLI or Grok before using them. Provider subscriptions and usage charges are separate.
 
 For browser development, `npm start` prints a private localhost session link. Open that exact link; the bare localhost URL intentionally rejects unauthenticated requests.
 
+## First run
+
+Pick a project folder. Terminals and pipelines only start inside a real project folder, never your whole user folder. The desktop app has a native Browse button; browser mode takes a pasted path.
+
 ## Workbench
 
-- Up to five real terminal panes, with shared prompts, compare, relay, notes and saved rounds.
-- Native CLI permission and project-trust prompts stay enabled. VibeDeck does not accept them automatically.
-- The sidebar switches project folders and opens saved rounds or the pipeline builder.
-- Terminal broadcasts share a project directory. Use them for comparing approaches; avoid approving conflicting edits in multiple terminals at once.
+- Up to five real terminal panes. Each pane header has the model and effort pickers, a live timer while it answers, a Broadcast on/off toggle, and a menu (send the answer to Notes or Sidecar, relay it to another pane, switch CLI, move, restart, close).
+- The prompt at the bottom goes to every pane with Broadcast on. Enter sends, Shift+Enter adds a line, Up/Down recalls earlier prompts.
+- When a CLI is stuck on a question only you should answer (Claude's folder-trust prompt, a Codex update prompt, a sign-in screen), a card over the pane says so. VibeDeck never answers these for you.
+- Compare shows every answer from the last round side by side. Pick a winner, continue from an answer, or ask a blind AI judge.
+- Native CLI permission and project-trust prompts stay enabled.
 
-## Configurable pipelines
+## Pipelines
 
-Choose one to eight Plan, Build or Review stages. Each stage independently selects Claude, Codex, Grok, or a saved API/local connection and an optional model ID. For example: Codex `gpt-6-astra` plans, Claude builds, and Codex reviews. An empty model uses the installed CLI's default. Grok CLI stages require a version supporting --prompt-file and --permission-mode. API stages use Anthropic Messages or OpenAI-compatible chat completions.
+Build a chain of one to eight stages. Each stage picks a role, a provider and an optional model and instructions:
 
-Save named pipelines locally, enter your request, and run. CLI stages run as separate noninteractive processes; API stages make cancellable requests to the configured endpoint. The runner uses process exit status and the final answer, not terminal silence, to decide completion. It passes prior outputs to the next stage through stdin. Review each answer and approve the next stage explicitly. Stop terminates the active process tree and drops remaining stages. Failures, denied Claude permissions and timeouts halt the chain.
+- **Plan**: reads the project and writes a plan. No file changes.
+- **Build**: makes the file changes.
+- **Review**: checks the actual project state against the request and ends with SHIP IT or NEEDS WORK. No file changes.
 
-Codex Plan/Review use the read-only sandbox; Build uses workspace-write. Claude uses plan/acceptEdits permission modes respectively. Provider policy restrictions still apply. Choose a project folder before starting a pipeline with CLI stages. API stages receive only the supplied prompt and preceding outputs; they return text/proposed code and cannot access or edit project files.
+Providers are Claude, Codex or Grok CLIs, or a saved API/local connection. Starters ship in `pipelines/*.json`; save your own from the builder.
 
-## Local data and connection protection
+While a stage runs you see a live activity log (files read and edited, commands run) and a timer. When it finishes the run pauses for you: read the answer, then approve, add a note for the next stage, edit what gets handed on, or redo the stage. Turn on auto-approve to run straight through. A failed stage can be retried. Stop kills the active process tree. Finished runs are kept on the History page with every stage's answer.
 
-Desktop profiles live in Electron's per-user application-data directory. Source-mode profiles remain beside `server.js`. Saved rounds, pipelines, notes and pasted images are local. Selected CLIs transmit prompts and relevant project context to their providers.
+How each CLI runs:
 
-The engine binds only to loopback, uses a random per-launch authenticated session, validates HTTP hosts and WebSocket origins, and retains provider permission prompts. Electron uses a sandboxed renderer with Node integration disabled. Closing the desktop application shuts down its engine and terminal processes.
+| Provider | Plan / Review | Build |
+|---|---|---|
+| Codex | `codex exec --json --sandbox read-only` | `--sandbox workspace-write` |
+| Claude | `claude -p --output-format stream-json --permission-mode plan` | `--permission-mode acceptEdits` |
+| Grok | `--output-format streaming-messages-json --permission-mode plan --tools read_file,list_dir,grep` | `--permission-mode acceptEdits` |
 
-## Validation and packaging
+Prompts go through stdin or a private temp file, never a shell. In acceptEdits mode Claude and Grok can edit files but their CLI may deny shell commands; the handoff shows a note when that happens. API stages receive only the prompt and earlier outputs; they return text and never touch files. Plan and Review time out after 15 minutes, Build after 30.
 
-```sh
-npm test
-npm run dist:win
-node test/packaged-smoke.cjs
-npm run dist:mac
-```
+## History
 
-Build macOS packages on macOS. GitHub Actions builds Windows x64, macOS Apple silicon and macOS Intel artifacts. These are unsigned validation artifacts until signing credentials are configured. A successful package build alone is not proof of a signed or notarized public release.
-
-See [RELEASE.md](RELEASE.md) for current validation and release requirements.
+Three tabs: pipeline runs (open one to read every stage, copy it, or run it again), broadcast rounds (reopen any round in Compare), and prompts.
 
 ## Connections
 
-The Connections view separates supported provider CLI sign-in from API credentials. CLI subscription eligibility follows the provider account; VibeDeck does not convert subscription tokens into API keys. API charges remain separate.
+Provider cards show whether each CLI is installed and its version, with a Sign in button that opens that provider's own login in a terminal pane. API and local connections cover Grok/xAI, OpenAI, Anthropic, Ollama, LM Studio and custom compatible endpoints. Test sends a small real prompt. "Use in a pipeline" opens a one-stage pipeline with that model.
 
-Presets cover Grok/xAI, OpenAI, Anthropic, Ollama and LM Studio, plus custom compatible endpoints. Model IDs are supplied by the user. Hosted endpoints require HTTPS; local loopback endpoints may use HTTP without a key. Redirects are rejected to avoid forwarding credentials to another destination.
+API keys are session-only by default. The desktop app can remember them using Electron safeStorage backed by the operating system. Keys are never sent back to the page. Changing a connection's destination requires entering the key again. Hosted endpoints require HTTPS; local loopback endpoints may use HTTP without a key. Redirects are rejected.
 
-API keys are session-only by default. The desktop app can remember them using Electron safeStorage backed by the operating system. Keys are excluded from connection metadata and all renderer responses. Changing the destination requires entering a key again. In browser development, encrypted persistence is disabled.
+## Local data and protection
 
-Provider adapters are fixture-tested. Actual account/model access, local-model availability and live CLI-version compatibility still require release validation.
+Desktop profiles live in Electron's per-user application-data directory; source-mode profiles live beside `server.js`. Saved rounds, pipeline runs, pipelines, notes and pasted images stay local. The CLIs send prompts and relevant project context to their providers.
 
-### Verify your connection
+The engine binds only to loopback, uses a random per-launch session, validates HTTP hosts and WebSocket origins, and keeps provider permission prompts. Electron uses a sandboxed renderer with Node integration disabled. Closing the app shuts down its engine and terminal processes.
 
-In **Connections**, use **Sign in** to open an installed provider's own CLI login flow. After login, open its terminal or select it in a pipeline. For API/local models, save the endpoint and exact chat model ID, then click **Test connection** (a small real request using normal provider usage). **Use model** opens a one-stage pipeline ready for your prompt. Add stages to mix providers. API/local stages produce text and proposed code; CLI stages can operate on project files with provider permissions.
+## Tests and packaging
 
-For an opt-in live Codex → Claude → Grok integration check, run `node test/live-pipeline.cjs`. It uses existing account sign-ins and a disposable temporary project.
+```sh
+npm test                       # extraction fixtures + runner, adapter and server tests
+node test/live-pipeline.cjs    # opt-in: real Codex -> Claude -> Grok run in a temp folder (uses your accounts)
+npm run dist:win               # Windows installer (unsigned)
+npm run dist:mac               # build on macOS
+```
+
+Build macOS packages on macOS. Installers are unsigned validation builds until signing credentials are configured. See [RELEASE.md](RELEASE.md).

@@ -36,9 +36,16 @@ app.whenReady().then(()=>{
       } catch {backend.send({type:'vaultResult',requestId:message.requestId,error:'Secure key storage could not be accessed. Use a session-only key or check your operating-system keychain.'});}
       return;
     }
+    if(message.type==='pickFolder'){
+      const options={title:'Choose a project folder',properties:['openDirectory'],defaultPath:typeof message.defaultPath==='string'?message.defaultPath:undefined};
+      (window?dialog.showOpenDialog(window,options):dialog.showOpenDialog(options))
+        .then(result=>backend.send({type:'pickFolderResult',requestId:message.requestId,dir:result.canceled?'':result.filePaths[0]||''}))
+        .catch(()=>backend.send({type:'pickFolderResult',requestId:message.requestId,dir:''}));
+      return;
+    }
     if(message.type!=='ready'||ready)return;ready=true;clearTimeout(timer);
     const origin=new URL(message.url).origin;
-    window=new BrowserWindow({width:1440,height:960,minWidth:860,minHeight:640,title:'VibeDeck',backgroundColor:'#edf1f5',icon:path.join(app.getAppPath(),'icon.png'),show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
+    window=new BrowserWindow({width:1440,height:960,minWidth:860,minHeight:640,title:'VibeDeck',backgroundColor:'#0b0d12',icon:path.join(app.getAppPath(),'icon.png'),show:false,webPreferences:{nodeIntegration:false,contextIsolation:true,sandbox:true}});
     window.removeMenu();
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',(event,url)=>{if(new URL(url).origin!==origin)event.preventDefault();});

@@ -1,0 +1,8 @@
+{
+  "name": "Build and double-check",
+  "steps": [
+    { "kind": "claude", "role": "Build", "model": "" },
+    { "kind": "codex", "role": "Review", "model": "" },
+    { "kind": "claude", "role": "Build", "model": "", "instructions": "Fix every problem the reviewer listed. Skip anything you disagree with and say why." }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Second opinion",
+  "steps": [
+    { "kind": "claude", "role": "Plan", "model": "", "instructions": "Answer the request directly with your best recommendation and the reasoning behind it." },
+    { "kind": "grok", "role": "Review", "model": "", "instructions": "Critique the earlier answer harshly but fairly: what is wrong, missing or overcomplicated? Then give your improved version." }
+  ]
+}

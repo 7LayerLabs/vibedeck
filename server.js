@@ -51,6 +51,8 @@ const ROSTER = [
   { id: 'notes',  label: 'NOTES' }, // PTY-less: a plain-english notepad pane
 ];
 const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
+// Startup dialogs (folder trust) eat typed input, so queued prompts wait until they are answered.
+const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
 const MAX_PANES = 5;
 const BUFFER_MAX = 400 * 1024;
 const ROUND_MAX = 200 * 1024;
@@ -78,7 +80,8 @@ state.kinds = state.kinds.filter(k => kindOf(k)).slice(0, MAX_PANES);
 if (!state.kinds.length) state.kinds = DEFAULT_ACTIVE;
 if (!fs.existsSync(state.cwd)) state.cwd = HOME;
 function saveState() {
-  state.kinds = [...sessions.values()].map(s => s.kind);
+  // an empty deck (no folder chosen yet) must not forget which panes to open later
+  if (sessions.size) state.kinds = [...sessions.values()].map(s => s.kind);
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
@@ -91,9 +94,28 @@ const { stripAnsi, segmentAnsi, cleanTui, extractAnswer } = require('./lib/scree
 const HEALTH = ROSTER.filter(r => ['claude', 'codex', 'grok'].includes(r.id)).map(r => {
   let ok = false;
   try { ok = IS_WIN ? fs.existsSync(r.cmd) : spawnSync('which', [r.cmd]).status === 0; } catch {}
-  return { id: r.id, label: r.label, ok, detail: ok ? '' : `${r.cmd} not found` };
+  return { id: r.id, label: r.label, ok, version: '', detail: ok ? '' : `${r.cmd} not found` };
 });
 slog(`cli health: ${HEALTH.map(h => `${h.id}=${h.ok ? 'ok' : 'MISSING'}`).join(' ')}`);
+// versions are looked up after boot (each CLI takes a second or two) and pushed to the UI
+function readVersions() {
+  for (const h of HEALTH.filter(x => x.ok)) {
+    const cmd = kindOf(h.id).cmd;
+    const isCmd = IS_WIN && /\.cmd$/i.test(cmd);
+    let child;
+    try { child = spawn(isCmd ? 'cmd.exe' : cmd, isCmd ? ['/d', '/c', cmd, '--version'] : ['--version'], { windowsHide: true, env: process.env }); } catch { continue; }
+    let out = '';
+    const timer = setTimeout(() => { try { child.kill(); } catch {} }, 15000);
+    child.stdout.on('data', d => out += d);
+    child.on('error', () => clearTimeout(timer));
+    child.on('close', () => {
+      clearTimeout(timer);
+      const m = out.match(/\d+\.\d+\.\d+/);
+      if (m) { h.version = m[0]; broadcastWs({ type: 'health', health: HEALTH }); }
+    });
+  }
+}
+setTimeout(readVersions, 1500);
 // judge kinds with a reliable non-interactive mode (claude -p, codex exec).
 // grok has no clean headless path — deliberately not offered.
 const JUDGE_KINDS = HEALTH.filter(h => h.ok && ['claude', 'codex'].includes(h.id)).map(h => h.id);
@@ -112,6 +134,8 @@ app.use(express.static(path.join(__dirname, 'public'), {
 app.use('/vendor/xterm', express.static(path.join(__dirname, 'node_modules', '@xterm', 'xterm')));
 app.use('/vendor/addon-fit', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-fit')));
 app.use('/vendor/addon-webgl', express.static(path.join(__dirname, 'node_modules', '@xterm', 'addon-webgl')));
+app.use('/vendor/fonts', express.static(path.join(__dirname, 'node_modules', '@fontsource-variable', 'inter', 'files')));
+app.use('/vendor/fonts', express.static(path.join(__dirname, 'node_modules', '@fontsource-variable', 'jetbrains-mono', 'files')));
 
 const meterData = require('./meter-data');
 app.get('/api/meter', (req, res) => {
@@ -151,13 +175,60 @@ const CUSTOM_PIPELINES_FILE=path.join(DATA_DIR,'custom-pipelines.json');
 let customDefinitions=[];
 try {customDefinitions=JSON.parse(fs.readFileSync(CUSTOM_PIPELINES_FILE,'utf8')).map(validatePipeline);}catch{}
 let customStatus={state:'idle',outputs:[]};
-const customRunner=new PipelineRunner({resolveCommand:kind=>kindOf(kind)?.cmd||CLI(kind),execute:args=>args.step.kind==='api'?executeApiStage({...args,connections}):executeStage(args),emit:status=>{
-  customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
-  if(status.state==='done') {
-    const entry={ts:Date.now(),prompt:status.name,cwd:state.cwd,winnerKind:null,responses:status.outputs.map((o,i)=>({pane:`pipeline-${i}`,kind:o.kind,label:`${o.role} · ${o.kind}`,text:o.text.slice(0,16*1024)}))};
-    appendRound(entry);broadcastWs({type:'roundSaved',round:entry});
+
+// Finished pipeline runs (done, stopped or failed with some output) for the History page.
+const RUNS_FILE=path.join(DATA_DIR,'pipeline-runs.jsonl');
+const RUNS_MAX=100;
+function readRuns(){
+  try {return fs.readFileSync(RUNS_FILE,'utf8').trim().split('\n').map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(Boolean).slice(-RUNS_MAX);}catch{return [];}
+}
+function saveRun(status){
+  const entry={id:status.id,ts:status.startedAt,finishedAt:Date.now(),name:status.name,request:status.request,cwd:status.cwd,state:status.state,error:status.state==='error'?status.text:'',
+    steps:status.steps,outputs:status.outputs.map(o=>({kind:o.kind,role:o.role,model:o.model,ms:o.ms,edited:!!o.edited,text:o.text.slice(0,64*1024)}))};
+  const items=readRuns().filter(r=>r.id!==entry.id).slice(-(RUNS_MAX-1));items.push(entry);
+  try {fs.writeFileSync(RUNS_FILE,items.map(r=>JSON.stringify(r)).join('\n')+'\n');} catch(e){slog(`runs write failed: ${e.message}`);}
+  broadcastWs({type:'pipelineRunSaved',run:entry});
+}
+const API_TIMEOUT_MS=10*60000;
+const customRunner=new PipelineRunner({
+  resolveCommand:kind=>kindOf(kind)?.cmd||CLI(kind),
+  execute:args=>{
+    if(args.step.kind!=='api')return executeStage(args);
+    args.onActivity('Waiting for the API connection to reply');
+    return executeApiStage({...args,connections,timeoutMs:API_TIMEOUT_MS});
+  },
+  emit:status=>{
+    if(status.type==='activity')return broadcastWs({type:'pipelineActivity',id:status.id,index:status.index,activity:status.activity});
+    customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
+    if(status.state!==customRunner.lastSavedState && ['done','cancelled','error'].includes(status.state) && (status.outputs.length || status.state==='error')){saveRun(status);}
+    customRunner.lastSavedState=status.state;
+    if(['done','cancelled','error'].includes(status.state))slog(`pipeline ${status.name}: ${status.state}${status.text?' '+status.text:''}`);
+  },
+});
+
+// Starter pipelines shipped in pipelines/*.json (new-format definitions only).
+function readTemplates(){
+  const out=[];
+  for(const dir of [PIPELINE_DIR,path.join(__dirname,'pipelines')]){
+    try {for(const f of fs.readdirSync(dir).filter(f=>f.endsWith('.json'))){
+      try {const def=validatePipeline(JSON.parse(fs.readFileSync(path.join(dir,f),'utf8')));if(!out.some(t=>t.name===def.name))out.push(def);}catch{}
+    }}catch{}
   }
-}});
+  return out;
+}
+
+// "Browse" asks the desktop shell for a native folder dialog; browser mode types a path instead.
+const folderRequests=new Map();
+function pickFolder(){
+  if(!process.send)return Promise.resolve(null);
+  const requestId=require('node:crypto').randomUUID();
+  return new Promise(resolve=>{
+    const timer=setTimeout(()=>{folderRequests.delete(requestId);resolve(null);},10*60000);
+    folderRequests.set(requestId,dir=>{clearTimeout(timer);resolve(dir);});
+    process.send({type:'pickFolder',requestId,defaultPath:state.cwd});
+  });
+}
+process.on('message',message=>{if(message?.type!=='pickFolderResult')return;const done=folderRequests.get(message.requestId);if(done){folderRequests.delete(message.requestId);done(typeof message.dir==='string'?message.dir:null);}});
 app.get('/api/desktop-health',(req,res)=>res.json({ok:true,version:require('./package.json').version,providers:HEALTH}));
 
 const sessions = new Map(); // instance id -> session (insertion order = pane order)
@@ -266,6 +337,29 @@ setInterval(() => {
     }
   }
 }, 400);
+
+// Screens where a CLI is blocked on a question only the user should answer.
+// The UI shows a card over the pane instead of leaving raw TUI text to decode.
+const WAITING = [
+  { kinds: ['claude'], test: t => TRUST_DIALOG.test(t), title: 'Claude is asking to trust this folder',
+    reason: 'Click into the pane, pick "Yes, I trust this folder" with the arrow keys, then press Enter. Claude asks once per folder.' },
+  { kinds: ['codex'], test: t => /Update\s*available/i.test(t) && /Press\s*enter\s*to\s*continue/i.test(t), title: 'Codex has an update',
+    reason: 'Pick "Update now" or "Skip" in the pane with the arrow keys, then press Enter.' },
+  { kinds: ['claude', 'codex', 'grok'], test: t => /Select\s*login\s*method|Sign\s*in\s*with\s*ChatGPT|Please\s*run\s*\/login|not\s*logged\s*in/i.test(t), title: 'Sign-in needed',
+    reason: 'This CLI is not signed in. Follow the sign-in steps in the pane, or use Connections to start the provider login.' },
+];
+setInterval(() => {
+  for (const [id, s] of sessions) {
+    if (!s.proc || !s.alive) { if (s.waiting) { s.waiting = null; broadcastWs({ type: 'paneWaiting', pane: id, reason: '' }); } continue; }
+    const tail = stripAnsi(s.buffer.slice(-2500));
+    const hit = WAITING.find(w => w.kinds.includes(s.kind) && w.test(tail));
+    const key = hit ? hit.title : null;
+    if (key !== (s.waiting || null)) {
+      s.waiting = key;
+      broadcastWs({ type: 'paneWaiting', pane: id, title: hit?.title || '', reason: hit?.reason || '' });
+    }
+  }
+}, 1000);
 
 function reorderSessions(order) {
   const entries = order.map(id => [id, sessions.get(id)]);
@@ -419,19 +513,6 @@ async function updateModels() {
   broadcastWs({ type: 'models', config: modelsCfg, report: report.join(' · ') });
 }
 
-function readPipelines() {
-  try {
-    return fs.readdirSync(PIPELINE_DIR).filter(f => f.endsWith('.json')).map(f => {
-      try {
-        const p = JSON.parse(fs.readFileSync(path.join(PIPELINE_DIR, f), 'utf8'));
-        if (!p.name || !Array.isArray(p.steps) || !p.steps.length) return null;
-        if (!p.steps.every(st => kindOf(st.kind) && typeof st.prompt === 'string')) return null;
-        return p;
-      } catch { return null; }
-    }).filter(Boolean);
-  } catch { return []; }
-}
-
 function roundResponses() {
   if (!lastRound) return [];
   return lastRound.targets.filter(id => sessions.has(id)).map(id => {
@@ -573,18 +654,11 @@ ${src}
   try { child.stdin.write(prompt); child.stdin.end(); } catch {}
 }
 
-// ---------- pipeline runner (auto-relay chains, one at a time) ----------
-// A step is "done" when its pane's cleaned output stops growing for STABLE_MS
-// and the pane looks idle. cleanTui filters spinners, so constant animation
-// can't fake progress. NOTE: the ROSTER ready patterns are startup-screen
-// signals — claude's post-answer idle screen is just "❯", so they must NOT be
-// used as a done condition (that hangs the step forever).
 const PIPE_STABLE_MS = 8000;
 const PIPE_STEP_TIMEOUT_MS = 10 * 60 * 1000;
-const BUSY_TAIL = /esc\s+to\s+interrupt/i;
-let pipeline = null; // { def, prompt, output, step, paneId, stepText, stepStart, lastCleanLen, stableSince }
+const BUSY_TAIL = /escs+tos+interrupt/i;
 
-// shared settle check (pipeline steps + broadcast rounds): the answer is done
+// shared settle check (broadcast rounds): the answer is done
 // when its cleaned text stops growing and the pane looks idle. st carries
 // { lastCleanLen, stableSince }. Returns the clean text, or null if not settled.
 function settledAnswer(s, promptText, st) {
@@ -604,61 +678,6 @@ function firstPaneOfKind(kind) {
   for (const [id, s] of sessions) if (s.kind === kind && s.alive) return id;
   return null;
 }
-
-function endPipeline(outcome, text) {
-  const name = pipeline?.def.name;
-  pipeline = null;
-  broadcastWs({ type: 'pipeline', state: outcome, name, text: text || '' });
-}
-
-function startPipeline(name, prompt) {
-  if (pipeline) return broadcastWs({ type: 'pipeline', state: 'error', name, text: 'a pipeline is already running — cancel it first' });
-  const def = readPipelines().find(p => p.name === name);
-  if (!def) return broadcastWs({ type: 'pipeline', state: 'error', name, text: 'unknown pipeline' });
-  const missing = def.steps.find(st => !firstPaneOfKind(st.kind));
-  if (missing) return broadcastWs({ type: 'pipeline', state: 'error', name, text: `needs a ${kindOf(missing.kind).label} pane — add one first` });
-  slog(`pipeline start: ${name}`);
-  pipeline = { def, prompt, output: '', step: -1 };
-  advancePipeline();
-}
-
-function advancePipeline() {
-  const p = pipeline;
-  p.step++;
-  if (p.step >= p.def.steps.length) {
-    slog(`pipeline done: ${p.def.name}`);
-    return endPipeline('done');
-  }
-  const stepDef = p.def.steps[p.step];
-  const paneId = firstPaneOfKind(stepDef.kind);
-  if (!paneId) return endPipeline('error', `no live ${kindOf(stepDef.kind).label} pane for step ${p.step + 1}`);
-  const s = sessions.get(paneId);
-  const text = stepDef.prompt
-    .replace(/\{prompt\}/g, p.prompt)
-    .replace(/\{output\}/g, p.output)
-    .replace(/\r?\n/g, '\n');
-  Object.assign(p, { paneId, stepText: text, stepStart: Date.now(), lastCleanLen: 0, stableSince: 0 });
-  lastRound = { ts: Date.now(), prompt: text, targets: [paneId] }; // compare shows the live step
-  s.roundOut = '';
-  s.inRound = true;
-  if (isReady(s)) writePrompt(s, text);
-  else s.queue.push({ text, ts: Date.now() });
-  slog(`pipeline step ${p.step + 1}/${p.def.steps.length} → ${paneId}`);
-  broadcastWs({ type: 'pipeline', state: 'step', name: p.def.name, step: p.step, total: p.def.steps.length, pane: paneId, label: kindOf(stepDef.kind).label });
-}
-
-setInterval(() => {
-  const p = pipeline;
-  if (!p || p.step < 0) return;
-  const s = sessions.get(p.paneId);
-  if (!s || !s.alive) return endPipeline('error', `pane ${p.paneId} died mid-step`);
-  if (Date.now() - p.stepStart > PIPE_STEP_TIMEOUT_MS) return endPipeline('error', `step ${p.step + 1} timed out`);
-  if (s.queue.length) return; // prompt hasn't landed yet
-  const clean = settledAnswer(s, p.stepText, p);
-  if (clean === null) return;
-  p.output = clean;
-  advancePipeline();
-}, 1000);
 
 // broadcast-round watcher: as each target's answer settles the client gets
 // answerDone (dot stops pulsing); when the last one lands, roundDone (compare
@@ -702,14 +721,42 @@ setInterval(() => {
   }
 }, 1000);
 
-if(!process.env.VIBEDECK_NO_PANES) for (const kind of state.kinds) {
-  if(kind==='notes' || kind==='shell' || HEALTH.find(h=>h.id===kind)?.ok) spawnPane(kind);
+// Panes only open once a real project folder is chosen: starting AI CLIs in the
+// home folder would ask them to trust (and work in) everything the user owns.
+const needsFolder = () => !state.cwd || path.resolve(state.cwd).toLowerCase() === path.resolve(HOME).toLowerCase();
+function spawnSavedPanes() {
+  for (const kind of state.kinds) {
+    if (sessions.size >= MAX_PANES) break;
+    if (kind==='notes' || kind==='shell' || HEALTH.find(h=>h.id===kind)?.ok) {
+      const id = spawnPane(kind);
+      broadcastWs({ type: 'paneAdded', pane: paneInfo(id) });
+    }
+  }
+}
+if(!process.env.VIBEDECK_NO_PANES && !needsFolder()) spawnSavedPanes();
+
+// "-> sidecar": file a pane's last answer into Sidecar (localhost:3010) as a formatted doc.
+function pushToSidecar(fromId) {
+  const s = sessions.get(fromId);
+  if (!s) return;
+  const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+  const label = kindOf(s.kind).label;
+  if (src.length < 40) {
+    const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
+    return broadcastWs({ type: 'notice', text: busy ? `${label} is still answering. Let it finish, then send it to Sidecar.` : 'Nothing in that pane to file yet. Broadcast a prompt first.' });
+  }
+  const title = (lastRound?.prompt || `${label} answer`).replace(/\s+/g, ' ').trim().slice(0, 60);
+  fetch('http://localhost:3010/filedoc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ md: src, title, source: label }) })
+    .then(r => broadcastWs({ type: 'notice', text: r.ok ? `${label}'s answer was filed to Sidecar.` : 'Sidecar rejected the answer. Is it up to date?' }))
+    .catch(() => broadcastWs({ type: 'notice', text: 'Sidecar is not running. Start it, then try again.' }));
 }
 
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
     customDefinitions, customStatus, connections:connections.list(), secureKeyStorage:!!process.env.VIBEDECK_VAULT,
+    templates: readTemplates(), runs: readRuns(), desktop: !!process.send, home: HOME, needsFolder: needsFolder(),
+    version: require('./package.json').version,
     panes: [...sessions.keys()].map(paneInfo),
     roster: ROSTER.map(r => ({ id: r.id, label: r.label, hasYolo: false, flags: '' })),
     maxPanes: MAX_PANES,
@@ -720,18 +767,15 @@ wss.on('connection', (ws) => {
     judges: JUDGE_KINDS,
     rounds: readRounds(50),
     playbooks: readPlaybooks(),
-    pipelines: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })),
     models: modelsCfg,
     notes: readNotes(),
     noteItems: readNoteItems(),
   }));
-  if (pipeline) ws.send(JSON.stringify({ type: 'pipeline', state: 'step', name: pipeline.def.name,
-    step: pipeline.step, total: pipeline.def.steps.length, pane: pipeline.paneId,
-    label: kindOf(pipeline.def.steps[pipeline.step].kind).label }));
   for (const [id, s] of sessions) {
     flushOut(id, s); // replay includes not-yet-flushed bytes — flush first so they aren't sent twice
     ws.send(JSON.stringify({ type: 'data', pane: id, data: s.buffer, replay: true }));
     if (!s.alive) ws.send(JSON.stringify({ type: 'exit', pane: id, code: null }));
+    else if (s.waiting) { const w = WAITING.find(x => x.title === s.waiting); if (w) ws.send(JSON.stringify({ type: 'paneWaiting', pane: id, title: w.title, reason: w.reason })); }
   }
 
   ws.on('message', (raw) => {
@@ -743,37 +787,68 @@ wss.on('connection', (ws) => {
   function handleMessage(msg, ws) {
     if(!msg || typeof msg!=='object')return;
     const s = sessions.get(msg.pane);
+    const reply=obj=>{if(ws.readyState===1)ws.send(JSON.stringify(obj));};
+    const notice=text=>reply({type:'notice',text});
+    if(typeof msg.type!=='string')return;
     if(msg.type==='connectionTest'){
-      if(ws.connectionTest){ws.send(JSON.stringify({type:'connectionError',text:'A connection test is already running.'}));return;}
-      if(customRunner.run){ws.send(JSON.stringify({type:'connectionError',text:'Finish or stop the pipeline before testing a connection.'}));return;}
+      if(ws.connectionTest)return notice('A connection test is already running.');
       const task=executeApiStage({step:{connectionId:msg.id},prompt:'Reply with a short greeting to confirm this connection works.',connections,timeoutMs:30000});
       ws.connectionTest=task;
       const cancel=()=>task.cancel();ws.once('close',cancel);
-      task.promise.then(answer=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionTestResult',id:msg.id,ok:true,text:'Connected. Model replied: '+answer.slice(0,500)}));}).catch(error=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionTestResult',id:msg.id,ok:false,text:error.message}));}).finally(()=>{ws.connectionTest=null;ws.off('close',cancel);});return;
+      task.promise.then(answer=>reply({type:'connectionTestResult',id:msg.id,ok:true,text:'Connected. The model replied: '+answer.slice(0,500)}))
+        .catch(error=>reply({type:'connectionTestResult',id:msg.id,ok:false,text:error.message}))
+        .finally(()=>{ws.connectionTest=null;ws.off('close',cancel);});
+      return;
     }
     if(msg.type==='cliSignIn'){
       const args={claude:'auth login',codex:'login',grok:'login'}[msg.kind];
       if(!args)return;
-      if(customRunner.run || sessions.size>=MAX_PANES){ws.send(JSON.stringify({type:'connectionError',text:'Stop the pipeline and free a terminal pane before signing in.'}));return;}
-      if(!HEALTH.find(h=>h.id===msg.kind)?.ok){ws.send(JSON.stringify({type:'connectionError',text:`Install the ${msg.kind} CLI first, then restart VibeDeck.`}));return;}
+      if(needsFolder())return notice('Choose a project folder first. Sign-in opens in a terminal pane.');
+      if(sessions.size>=MAX_PANES)return notice('Close a terminal pane first. Sign-in opens in a new pane.');
+      if(!HEALTH.find(h=>h.id===msg.kind)?.ok)return notice(`Install the ${msg.kind} CLI first, then restart VibeDeck.`);
       const id=spawnPane(msg.kind,undefined,args);saveState();broadcastWs({type:'paneAdded',pane:paneInfo(id)});
-      ws.send(JSON.stringify({type:'cliSignInOpened'}));return;
+      return reply({type:'cliSignInOpened',pane:id});
     }
     if(['connectionSave','connectionRemove'].includes(msg.type)){
-      if(customRunner.run){ws.send(JSON.stringify({type:'connectionError',text:'Finish or stop the pipeline before changing connections.'}));return;}
+      if(customRunner.active)return notice('Finish or stop the pipeline before changing connections.');
       const operation=msg.type==='connectionSave'?connections.save(msg.connection):connections.remove(msg.id);
-      operation.then(record=>{broadcastWs({type:'connections',items:connections.list(),text:msg.type==='connectionSave'?'Connection saved.':'Connection removed.'});if(record && ws.readyState===1)ws.send(JSON.stringify({type:'connectionSaved',id:record.id}));}).catch(error=>{if(ws.readyState===1)ws.send(JSON.stringify({type:'connectionError',text:error.message}));});return;
+      operation.then(record=>{broadcastWs({type:'connections',items:connections.list(),text:msg.type==='connectionSave'?'Connection saved.':'Connection removed.'});if(record)reply({type:'connectionSaved',id:record.id});})
+        .catch(error=>reply({type:'connectionError',text:error.message}));
+      return;
     }
-    if(msg.type==='customPipelineSave'){
-      try {const def=validatePipeline(msg.definition);customDefinitions=[...customDefinitions.filter(p=>p.name!==def.name),def].slice(-30);fs.writeFileSync(CUSTOM_PIPELINES_FILE,JSON.stringify(customDefinitions,null,2));broadcastWs({type:'customDefinitions',items:customDefinitions});}catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
-    }
-    if(['customPipelineStart','customPipelineResume','customPipelineCancel'].includes(msg.type)){
+    if(msg.type==='customPipelineSave'||msg.type==='customPipelineDelete'){
       try {
-        if(msg.type==='customPipelineStart'){if(state.cwd===HOME && msg.definition?.steps?.some(step=>step.kind!=='api'))throw Error('Choose a project folder before running CLI stages.');if(pipeline || lastRound?.pending?.size)throw Error('Finish the active round first.');customRunner.start(msg.definition,msg.prompt,state.cwd);}
-        else if(msg.type==='customPipelineResume')customRunner.resume();else customRunner.cancel();
-      }catch(e){ws.send(JSON.stringify({type:'customPipelineError',text:e.message}));}return;
+        if(msg.type==='customPipelineSave'){const def=validatePipeline(msg.definition);customDefinitions=[...customDefinitions.filter(p=>p.name!==def.name),def].slice(-30);}
+        else customDefinitions=customDefinitions.filter(p=>p.name!==msg.name);
+        fs.writeFileSync(CUSTOM_PIPELINES_FILE,JSON.stringify(customDefinitions,null,2));
+        broadcastWs({type:'customDefinitions',items:customDefinitions,saved:msg.type==='customPipelineSave'?String(msg.definition?.name||'').trim():''});
+      }catch(e){reply({type:'customPipelineError',text:e.message});}
+      return;
     }
-    if(customRunner.run && ['broadcast','relay','pipeline','setcwd','restart','replace','yolo','input','image','judge','updateModels','toNotes'].includes(msg.type)){ws.send(JSON.stringify({type:'customPipelineError',text:'Finish or cancel the pipeline before changing the workspace or running other work.'}));return;}
+    if(msg.type==='pickFolder'){
+      pickFolder().then(dir=>reply({type:'folderPicked',dir:dir||''}));
+      return;
+    }
+    if(msg.type.startsWith('customPipeline')){
+      try {
+        if(msg.type==='customPipelineStart'){
+          if(needsFolder() && msg.definition?.steps?.some(step=>step.kind!=='api'))throw Error('Choose a project folder first. CLI stages work inside that folder.');
+          if(lastRound?.pending?.size)throw Error('Wait for the current broadcast round to finish first.');
+          const missing=(msg.definition?.steps||[]).find(step=>step.kind!=='api' && HEALTH.find(h=>h.id===step.kind) && !HEALTH.find(h=>h.id===step.kind).ok);
+          if(missing)throw Error(`The ${missing.kind} CLI is not installed. Install it or pick another provider for that stage.`);
+          customRunner.start(msg.definition,msg.prompt,state.cwd,{autoApprove:!!msg.autoApprove});
+        }
+        else if(msg.type==='customPipelineResume')customRunner.resume({note:msg.note,editedOutput:msg.editedOutput});
+        else if(msg.type==='customPipelineRetry')customRunner.retry({note:msg.note});
+        else if(msg.type==='customPipelineAuto')customRunner.setAutoApprove(msg.on);
+        else if(msg.type==='customPipelineDismiss')customRunner.dismiss();
+        else if(msg.type==='customPipelineCancel')customRunner.cancel();
+      }catch(e){reply({type:'customPipelineError',text:e.message});}
+      return;
+    }
+    // A running pipeline works in the project folder, so nothing may move the folder or
+    // fire competing prompts at it. Typing into a pane stays allowed.
+    if(customRunner.active && ['broadcast','relay','setcwd','replace'].includes(msg.type))return notice('A pipeline is running in this folder. Stop it or let it finish first.');
 
     if (msg.type === 'input' && s && s.alive && s.proc) {
       s.proc.write(msg.data);
@@ -793,9 +868,9 @@ wss.on('connection', (ws) => {
       broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
       if(!Array.isArray(msg.targets)||typeof msg.data!=='string'||!msg.data.trim()||msg.data.length>32000)return;
-      if(lastRound?.pending?.size)return ws.send(JSON.stringify({type:'customPipelineError',text:'Wait for the current round to finish.'}));
+      if(lastRound?.pending?.size)return notice('Wait for the current round to finish, or stop it first.');
       const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
-      if(!targets.length)return ws.send(JSON.stringify({type:'customPipelineError',text:'Open a live terminal and include it in the broadcast first.'}));
+      if(!targets.length)return notice('Turn on broadcast for at least one live terminal first.');
       lastRound = { ts: Date.now(), prompt: msg.data, targets,
                     pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0 }])) };
       // noHist: promoted mega-prompts skip ↑/↓ history (rounds.jsonl still records them)
@@ -834,18 +909,19 @@ wss.on('connection', (ws) => {
       lastHistText = items.length ? items[items.length - 1].text : ''; // deleting the newest re-allows it
     } else if (msg.type === 'playbooks') {
       ws.send(JSON.stringify({ type: 'playbooks', items: readPlaybooks() }));
-    } else if (msg.type === 'pipelines') {
-      ws.send(JSON.stringify({ type: 'pipelines', items: readPipelines().map(p => ({ name: p.name, steps: p.steps.map(st => kindOf(st.kind).label) })) }));
-    } else if (msg.type === 'pipeline') {
-      const prompt = String(msg.prompt || '').trim();
-      if (!prompt) return;
-      appendHistory(Date.now(), prompt);
-      ws.send(JSON.stringify({type:'customPipelineError',text:'Use the pipeline builder to select stages and review handoffs.'}));
+    } else if (msg.type === 'stopRound') {
+      if (lastRound?.pending?.size) {
+        for (const id of lastRound.pending.keys()) { const t = sessions.get(id); if (t) t.queue = []; }
+        lastRound.pending.clear();
+        broadcastWs({ type: 'roundStopped' });
+      }
     } else if (msg.type === 'notesSet') {
       writeNotes(String(msg.text ?? ''));
       broadcastWs({ type: 'notes', text: readNotes() });
     } else if (msg.type === 'toNotes') {
       pushToNotes(msg.pane);
+    } else if (msg.type === 'toSidecar') {
+      pushToSidecar(msg.pane);
     } else if (msg.type === 'noteDel') {
       const items = readNoteItems().filter(n => n.id !== msg.id);
       writeNoteItems(items);
@@ -853,14 +929,13 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'updateModels') {
       broadcastWs({ type: 'modelsUpdating' });
       updateModels();
-    } else if (msg.type === 'pipelineCancel') {
-      if(pipeline){const active=sessions.get(pipeline.paneId);active?.proc?.kill();if(active)active.queue=[];endPipeline('cancelled','Pipeline process stopped.');}
     } else if (msg.type === 'setcwd') {
       let dir = String(msg.dir || '').trim().replace(/^"|"$/g, '');
       if (!dir) return;
       try { if (!fs.statSync(dir).isDirectory()) throw 0; }
-      catch { return ws.send(JSON.stringify({ type: 'cwdError', text: `not a folder: ${dir}` })); }
+      catch { return notice(`That folder does not exist: ${dir}`); }
       dir = path.resolve(dir);
+      if (dir.toLowerCase() === path.resolve(HOME).toLowerCase()) return notice('Pick a project folder, not your whole user folder.');
       state.cwd = dir;
       state.recents = [dir, ...state.recents.filter(r => r.toLowerCase() !== dir.toLowerCase())].slice(0, 8);
       // relaunch every pane in the new project dir
@@ -871,8 +946,9 @@ wss.on('connection', (ws) => {
         spawnPane(sess.kind, id, sess.extraArgs, sess.yolo);
         reorderSessions(order);
       }
+      if (!sessions.size && !process.env.VIBEDECK_NO_PANES) spawnSavedPanes();
       saveState();
-      broadcastWs({ type: 'cwdChanged', cwd: state.cwd, recents: state.recents });
+      broadcastWs({ type: 'cwdChanged', cwd: state.cwd, recents: state.recents, needsFolder: needsFolder() });
     } else if (msg.type === 'resize' && s && s.alive && s.proc) {
       const cols = Math.max(2, msg.cols | 0), rows = Math.max(2, msg.rows | 0);
       try { s.proc.resize(cols, rows); } catch {}

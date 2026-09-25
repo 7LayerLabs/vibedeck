@@ -42,3 +42,17 @@ Added Grok CLI pipelines, Anthropic/OpenAI-compatible API adapters, local Ollama
 - Ollama was verified through the browser UI, connection save, HTTP adapter, pipeline completion and visible answer. Hosted API adapters still require validation with the user's own API keys; automated tests exercise both protocol formats.
 - A recovered Claude tool denial now appears as a review note instead of discarding a successful result. Provider permissions remain in place.
 - The Windows installer was rebuilt. Public release, macOS signing/build validation and hosted-key account testing remain pending.
+
+## 2.2.0: Night Shift redesign and working pipelines (2026-09-25)
+
+- One dark "Night Shift" design across the whole app, replacing the light workbench layered over the old dark UI. Local Inter and JetBrains Mono fonts; no network needed.
+- Fixed: broadcasting a prompt crashed silently in 2.1.0 (a removed `TRUST_DIALOG` definition) and locked the deck for 10 minutes.
+- Pipelines: live activity log per stage (Claude and Grok stream JSON, Codex `--json`), per-stage instructions, stronger Plan/Build/Review briefs, approve with a note, edit the handoff, redo a stage, retry a failed stage, auto-approve, 15/30 minute stage timeouts, run history.
+- Grok read-only stages are limited to file reading tools, since Grok's plan mode cancels the whole run on a blocked command. Grok answers now come from its final result instead of the first line of plain output.
+- Panes no longer start in the home folder. A first-run screen asks for a project folder, with a native folder picker in the desktop app.
+- Cards over panes explain when a CLI is waiting on the user (folder trust, Codex update, sign-in).
+- Pane headers are one row with a menu; the "-> sidecar" action from the July branch is back.
+- History and Connections are full pages. Provider cards show CLI install status and version.
+- Removed the old pane-driven pipeline code and old-format pipeline templates.
+
+Verified 2026-09-25 on Windows: `npm test` (16 tests, 42 extraction assertions) passed; a headless UI pass covered every page and a full API pipeline (run, approve with note, finish, History) with no console errors; a live Codex -> Claude -> Grok run in a temp folder produced the exact file and a SHIP IT review in 51 seconds.
