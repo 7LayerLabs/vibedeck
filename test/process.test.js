@@ -12,10 +12,11 @@ test('runs CLI adapter, safely passes stdin and collects final output',async t=>
     const prompt='Quotes " stay literal; & no shell $(commands)\nsecond line';
     const activity=[];const result=await executeStage({step:{kind,role:'Plan',model:'test-model'},prompt,cwd:dir,resolveCommand:()=>command,onActivity:l=>activity.push(l)}).promise;
     if(kind==='claude')assert.deepEqual(activity,['Session started on test']);
-    assert.equal(result,prompt);
+    assert.equal(result.text,prompt);
+    if(kind==='claude')assert.equal(result.model,'test');
   }
   fs.writeFileSync(script,`#!/usr/bin/env node\nprocess.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({type:'result',result:'Completed with an allowed alternative.',is_error:false,permission_denials:[{tool_name:'Bash'}]})));`);
-  const recovered=await executeStage({step:{kind:'claude',role:'Build'},prompt:'test',cwd:dir,resolveCommand:()=>command}).promise;
+  const {text:recovered}=await executeStage({step:{kind:'claude',role:'Build'},prompt:'test',cwd:dir,resolveCommand:()=>command}).promise;
   assert.match(recovered,/Completed with an allowed alternative/);
   assert.match(recovered,/Permission note: 1 tool request/);
 });

@@ -21,15 +21,17 @@ Pick a project folder. Terminals and pipelines only start inside a real project 
 
 ## Workbench
 
-- Up to five real terminal panes. Each pane header has the model and effort pickers, a live timer while it answers, a Broadcast on/off toggle, and a menu (send the answer to Notes or Sidecar, relay it to another pane, switch CLI, move, restart, close).
+- Up to five real terminal panes. Each pane header has a model chip, a live timer while it answers, a Broadcast on/off toggle, and a menu (send the answer to Notes or Sidecar, relay it to another pane, switch CLI, move, restart, close).
+- The model chip shows the model and effort the pane was launched with (for example "Opus 5.5 · High"). Picking a new one restarts that pane with the CLI's own `--model` / effort flags and resumes the same conversation (`claude --resume`, `codex resume`, `grok --resume`), so the model is guaranteed and nothing is typed into the CLI's menus or changes its global default. The pick is remembered per CLI for new panes. Model names and IDs live in `lib/models.js`; the refresh button re-reads each CLI's list.
 - The prompt at the bottom goes to every pane with Broadcast on. Enter sends, Shift+Enter adds a line, Up/Down recalls earlier prompts.
-- When a CLI is stuck on a question only you should answer (Claude's folder-trust prompt, a Codex update prompt, a sign-in screen), a card over the pane says so. VibeDeck never answers these for you.
-- Compare shows every answer from the last round side by side. Pick a winner, continue from an answer, or ask a blind AI judge.
-- Native CLI permission and project-trust prompts stay enabled.
+- When a CLI is stuck on a question only you should answer (Claude's or Codex's folder-trust prompt, a Codex update prompt, a sign-in screen), a card over the pane says so and prompts wait until it's answered. VibeDeck never answers these for you.
+- Answers are read from each CLI's own conversation log (`~/.claude/projects`, `~/.codex/sessions`, `~/.grok/sessions`), not scraped from the terminal. That gives the exact text, the model that really wrote it, and a reliable "finished" signal for the round. Terminal scraping remains only as a fallback.
+- Compare shows every answer from the last round side by side, labeled with the model that wrote it. Pick a winner, continue from an answer, or ask a blind AI judge.
+- CLIs start with a clean environment: variables from a parent Claude Code session (`CLAUDECODE`, `CLAUDE_CODE_*`) and Electron's `ELECTRON_RUN_AS_NODE` are removed, so launching VibeDeck from inside Claude Code doesn't change how the panes behave.
 
 ## Pipelines
 
-Build a chain of one to eight stages. Each stage picks a role, a provider and an optional model and instructions:
+Build a chain of one to eight stages. Each stage picks a role, a provider, a model and effort (named as each CLI names them, like "Opus 5.5" or "GPT-6-Sol"), and optional instructions. Every finished stage shows the model the CLI reported actually running on, and flags it if that differs from the pick.
 
 - **Plan**: reads the project and writes a plan. No file changes.
 - **Build**: makes the file changes.
@@ -41,13 +43,15 @@ While a stage runs you see a live activity log (files read and edited, commands 
 
 How each CLI runs:
 
-| Provider | Plan / Review | Build |
-|---|---|---|
-| Codex | `codex exec --json --sandbox read-only` | `--sandbox workspace-write` |
-| Claude | `claude -p --output-format stream-json --permission-mode plan` | `--permission-mode acceptEdits` |
-| Grok | `--output-format streaming-messages-json --permission-mode plan --tools read_file,list_dir,grep` | `--permission-mode acceptEdits` |
+| Provider | Plan / Review | Build | Build with "Can run commands" |
+|---|---|---|---|
+| Codex | `codex exec --json --sandbox read-only` | `--sandbox workspace-write` (runs commands inside Codex's sandbox) | same |
+| Claude | `claude -p --output-format stream-json --permission-mode plan` | `--permission-mode acceptEdits` (commands denied, noted at the handoff) | `--permission-mode bypassPermissions` |
+| Grok | `--output-format streaming-messages-json --permission-mode plan --tools read_file,list_dir,grep` | `--permission-mode acceptEdits --tools read_file,list_dir,grep,write,search_replace` | `--permission-mode bypassPermissions` |
 
-Prompts go through stdin or a private temp file, never a shell. In acceptEdits mode Claude and Grok can edit files but their CLI may deny shell commands; the handoff shows a note when that happens. API stages receive only the prompt and earlier outputs; they return text and never touch files. Plan and Review time out after 15 minutes, Build after 30.
+Model and effort add `--model` / `-m` and `--effort`, `--reasoning-effort` or `-c model_reasoning_effort=`. Grok's tool lists matter: Grok stops the whole run the moment its permission mode blocks a tool, so each stage only gets tools it may use. "Can run commands" is off by default; turn it on for a Build stage that should run tests, installs or builds without asking.
+
+Prompts go through stdin or a private temp file, never a shell. API stages receive only the prompt and earlier outputs; they return text and never touch files. Plan and Review time out after 15 minutes, Build after 30.
 
 ## History
 

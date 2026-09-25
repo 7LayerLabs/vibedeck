@@ -72,3 +72,15 @@ test('codex json events become readable activity lines',()=>{
   assert.equal(codexActivity({type:'item.completed',item:{type:'file_change',changes:[{path:'a.js',kind:'add'}]}}),'Created a.js');
   assert.equal(codexActivity({type:'turn.started'}),null);
 });
+test('stages record the model the CLI reports, and effort reaches the CLI flags',async()=>{
+  const runner=new PipelineRunner({emit:()=>{},execute:()=>({promise:Promise.resolve({text:'ok',model:'claude-opus-5-5'}),cancel(){}})});
+  runner.start({name:'M',steps:[{kind:'claude',role:'Plan',model:'claude-opus-5-5',effort:'high'}]},'x','cwd');await tick();
+  assert.equal(runner.run.outputs[0].ranOn,'claude-opus-5-5');assert.equal(runner.run.outputs[0].effort,'high');
+  const {codexSessionModel}=require('../lib/pipeline-runner');
+  const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'vd-home-'));const d=new Date();
+  const dir=path.join(home,'.codex','sessions',String(d.getFullYear()),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0'));
+  fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,'rollout-x-0123456789abcdef.jsonl'),'{"type":"turn_context","payload":{"model":"gpt-6-sol"}}\n');
+  assert.equal(codexSessionModel('0123456789abcdef',home),'gpt-6-sol');assert.equal(codexSessionModel('missing-thread-id',home),'');
+  fs.rmSync(home,{recursive:true,force:true});
+});

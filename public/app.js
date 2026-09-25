@@ -3,26 +3,20 @@
 
 const COLORS = { claude: '#d97757', codex: '#10a37f', grok: '#9aa4b5', shell: '#7aa2f7', notes: '#c9a4f0', api: '#c4a35a' };
 const KIND_NAMES = { claude: 'Claude', codex: 'Codex', grok: 'Grok', shell: 'Shell', notes: 'Notes', api: 'API' };
-// Per-kind dropdowns. Choices live in models.json on the server.
-// mode 'slash':    types the slash command into the running session (no restart)
-// mode 'relaunch': restarts the pane with the flag (codex/grok can't switch mid-session)
-const KNOBS = {
-  claude: [
-    { mode: 'slash', cmd: '/model', placeholder: 'model', list: 'models' },
-    { mode: 'slash', cmd: '/effort', placeholder: 'effort', list: 'efforts' },
-  ],
-  codex: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model', list: 'models' },
-    { mode: 'relaunch', argTemplate: '-c model_reasoning_effort={v}', placeholder: 'effort', list: 'efforts' },
-  ],
-  grok: [
-    { mode: 'relaunch', argTemplate: '-m {v}', placeholder: 'model', list: 'models' },
-    { mode: 'relaunch', argTemplate: '--effort {v}', placeholder: 'effort', list: 'efforts' },
-  ],
-  shell: [], notes: [],
-};
+// Model + effort lists per CLI come from the server (lib/models.js, refreshed by the models button).
+// The server launches every pane with the saved pick, so a pane's chip shows what it really runs.
 let modelsCfg = {};
-const choicesFor = (kind, knob) => knob.choices || (modelsCfg[kind] || {})[knob.list] || [];
+const AI_KINDS = ['claude', 'codex', 'grok'];
+const modelLabel = (kind, id) => (modelsCfg[kind]?.labels || {})[id] || id;
+// name for a model a CLI reported running on; grok reports "grok-4.7-build" for Grok 4.7
+function ranLabel(kind, id) {
+  const labels = modelsCfg[kind]?.labels || {};
+  return labels[id] || (kind === 'grok' && id.endsWith('-build') && labels[id.slice(0, -6)]) || id;
+}
+function chipText(p) {
+  const model = p.model ? modelLabel(p.kind, p.model) : 'Default model';
+  return p.effort ? `${model} · ${modelLabel(p.kind, p.effort)}` : model;
+}
 const THEME = {
   background: '#0e1118', foreground: '#d4d9e3', cursor: '#ffd400', cursorAccent: '#0e1118',
   selectionBackground: '#ffd40040', black: '#0e1118', brightBlack: '#626a7c',
@@ -94,14 +88,6 @@ const fmtWhen = ts => {
   return d.toDateString() === now.toDateString() ? `Today ${t}` : `${d.getMonth() + 1}/${d.getDate()} ${t}`;
 };
 
-// staged writes: a single "/model x" paste-chunk makes the slash menu
-// filter on the whole string and miss; command, then arg, then Enter works
-function slashCommand(paneId, cmd, arg) {
-  send({ type: 'input', pane: paneId, data: cmd });
-  setTimeout(() => send({ type: 'input', pane: paneId, data: ` ${arg}` }), 300);
-  setTimeout(() => send({ type: 'input', pane: paneId, data: '\r' }), 600);
-}
-
 // ---------- note cards (NOTES pane) ----------
 function renderNoteCards(pane) {
   const box = pane.cardsEl;
@@ -155,7 +141,7 @@ function buildPane(info) {
     <header class="pane-head">
       <span class="dot"></span>
       <span class="pname">${esc(kindName(info.kind))}</span><span class="inst"></span>
-      <span class="knobs" style="display:flex;gap:5px"></span>
+      <button class="modelchip" title="Model and effort for this pane" hidden><span></span>${ICONS.chev}</button>
       <span class="pstate"></span>
       <span class="grow"></span>
       <button class="bcast" title="Include this pane when you broadcast">${ICONS.radio}<span>Broadcast on</span></button>
@@ -176,7 +162,7 @@ function buildPane(info) {
     </div>`;
   panesEl.appendChild(el);
 
-  const pane = { el, id: info.id, kind: info.kind, label: info.label, dead: false, broadcast: !isNotes, knobSels: [], busySince: 0 };
+  const pane = { el, id: info.id, kind: info.kind, label: info.label, dead: false, broadcast: !isNotes, busySince: 0, model: info.model || '', effort: info.effort || '' };
   const bcBtn = el.querySelector('.bcast');
   const setBroadcast = on => {
     pane.broadcast = on;
@@ -240,31 +226,13 @@ function buildPane(info) {
   Object.assign(pane, { term, fit });
   el.querySelector('.gate-focus').addEventListener('click', () => { el.classList.remove('gated'); term.focus(); });
 
-  // knob dropdowns (model, effort): slash-typed for claude, relaunch flags for codex/grok.
-  // All relaunch knobs combine into one flag string so changing effort keeps the model choice.
-  const knobsEl = el.querySelector('.knobs');
-  const relaunchKnobs = [];
-  const relaunchArgs = () => relaunchKnobs.map(({ knob, sel }) => sel.value ? knob.argTemplate.replace('{v}', sel.value) : '').filter(Boolean).join(' ');
-  for (const knob of KNOBS[info.kind] || []) {
-    const sel = document.createElement('select');
-    sel.className = 'chipsel';
-    sel.title = knob.placeholder === 'model' ? 'Model' : 'Reasoning effort';
-    const storeKey = `vibedeck-${info.kind}-${(knob.cmd || knob.argTemplate).replace(/[^a-z]/gi, '')}`;
-    let saved = '';
-    try { saved = localStorage.getItem(storeKey) || ''; } catch {}
-    const choices = choicesFor(info.kind, knob);
-    sel.innerHTML = `<option value="">${knob.placeholder}</option>` + choices.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
-    if (saved && choices.includes(saved)) sel.value = saved;
-    if (knob.mode === 'relaunch') relaunchKnobs.push({ knob, sel });
-    pane.knobSels.push({ knob, sel });
-    sel.addEventListener('change', () => {
-      const v = sel.value;
-      if (!v) return;
-      if (knob.mode === 'relaunch') send({ type: 'restart', pane: info.id, args: relaunchArgs() });
-      else slashCommand(info.id, knob.cmd, v);
-      try { localStorage.setItem(storeKey, v); } catch {}
-    });
-    knobsEl.appendChild(sel);
+  // model + effort chip: shows what this pane was launched with; the menu changes it
+  if (AI_KINDS.includes(info.kind) && !info.signIn) {
+    const chip = el.querySelector('.modelchip');
+    chip.hidden = false;
+    pane.updateChip = () => { chip.querySelector('span').textContent = chipText(pane); chip.title = `Model and effort: ${chipText(pane)}. Click to change.`; };
+    pane.updateChip();
+    chip.addEventListener('click', e => { e.stopPropagation(); openModelMenu(pane, chip); });
   }
 
   // images: drop onto the pane or paste while it's focused. The server saves the
@@ -300,10 +268,42 @@ function movePane(id, dir) {
   send({ type: 'reorder', order });
 }
 
-// one shared popover menu for every pane's "..." button
+// one shared popover menu for every pane's "..." button and model chip
 const paneMenu = $('paneMenu');
 function closeMenus() { paneMenu.hidden = true; }
+function placeMenu(anchor, alignLeft) {
+  paneMenu.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const w = paneMenu.offsetWidth, h = paneMenu.offsetHeight;
+  const left = alignLeft ? r.left : r.right - w;
+  paneMenu.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, left)) + 'px';
+  paneMenu.style.top = (r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + 'px';
+}
+// Model + effort menu. Claude switches in place; Codex and Grok restart the pane (they only
+// read the model at launch). The pick is remembered for every future pane of that CLI.
+function openModelMenu(pane, anchor) {
+  const cfg = modelsCfg[pane.kind] || { models: [], efforts: [], labels: {} };
+  const check = on => on ? ICONS.check : '<svg class="i" viewBox="0 0 24 24"></svg>';
+  const row = (field, value, label) => `<button class="menu-item" data-field="${field}" data-value="${esc(value)}">${check((pane[field] || '') === value)}${esc(label)}</button>`;
+  const items = ['<div class="menu-label">Model</div>',
+    row('model', '', `Default${cfg.defaultLabel ? ' (' + cfg.defaultLabel + ')' : ''}`),
+    ...cfg.models.map(id => row('model', id, cfg.labels[id] || id))];
+  if (cfg.efforts.length) items.push('<div class="menu-sep"></div><div class="menu-label">Effort</div>', row('effort', '', 'Default'), ...cfg.efforts.map(id => row('effort', id, cfg.labels[id] || id)));
+  items.push('<div class="menu-note">The pane restarts on the new model and keeps its conversation. New panes use this pick too.</div>');
+  paneMenu.innerHTML = items.join('');
+  paneMenu.classList.add('model-menu');
+  placeMenu(anchor, true);
+  paneMenu.onclick = e => {
+    const b = e.target.closest('.menu-item');
+    if (!b) return;
+    closeMenus();
+    const next = { model: pane.model || '', effort: pane.effort || '', [b.dataset.field]: b.dataset.value };
+    if (next.model === (pane.model || '') && next.effort === (pane.effort || '')) return;
+    send({ type: 'paneModel', pane: pane.id, ...next });
+  };
+}
 function openPaneMenu(pane, anchor) {
+  paneMenu.classList.remove('model-menu');
   const ai = ['claude', 'codex', 'grok'].includes(pane.kind);
   const others = [...panes.values()].filter(x => x !== pane && x.kind !== 'notes' && !x.dead);
   const order = [...panes.keys()], idx = order.indexOf(pane.id);
@@ -325,11 +325,7 @@ function openPaneMenu(pane, anchor) {
   if (pane.term) items.push(`<button class="menu-item" data-act="restart">${ICONS.restart}Restart</button>`);
   items.push(`<button class="menu-item danger" data-act="close" ${panes.size <= 1 ? 'disabled' : ''}>${ICONS.x}Close pane</button>`);
   paneMenu.innerHTML = items.join('');
-  paneMenu.hidden = false;
-  const r = anchor.getBoundingClientRect();
-  const w = paneMenu.offsetWidth, h = paneMenu.offsetHeight;
-  paneMenu.style.left = Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) + 'px';
-  paneMenu.style.top = (r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + 'px';
+  placeMenu(anchor, false);
   paneMenu.onclick = e => {
     const b = e.target.closest('.menu-item');
     if (!b || b.disabled) return;
@@ -502,6 +498,9 @@ ws.addEventListener('message', ev => {
     setCwd(msg.cwd || '', msg.recents || [], msg.needsFolder);
     setPlaybooks();
     if (!panes.size) msg.panes.forEach(p => buildPane(p));
+    // a round still running when the page (re)loaded: keep its timers, dots and Stop button
+    setRoundActive(!!msg.round);
+    (msg.round?.targets || []).forEach(id => { const p = panes.get(id); if (p) { p.busySince = msg.round.ts; p.el.querySelector('.dot')?.classList.add('busy'); } });
     setTimeout(nudgeAll, 600); // repaint after scrollback replay
   } else if (msg.type === 'data') {
     panes.get(msg.pane)?.term?.write(msg.data);
@@ -510,9 +509,11 @@ ws.addEventListener('message', ev => {
     if (p) { p.dead = true; p.busySince = 0; p.el.classList.add('dead'); p.el.classList.remove('gated'); renderTargets(); }
   } else if (msg.type === 'restarted') {
     const p = panes.get(msg.pane);
+    if (p && msg.info) { p.model = msg.info.model; p.effort = msg.info.effort; p.updateChip?.(); }
+    if (p && msg.resumed !== undefined) toast(msg.resumed ? `${paneTitle(p)} restarted on ${chipText(p)} and picked up the same conversation.` : `${paneTitle(p)} restarted on ${chipText(p)}.`, 'restart');
     if (p && p.term) {
       p.dead = false; p.busySince = 0;
-      p.el.classList.remove('dead');
+      p.el.classList.remove('dead', 'gated');
       p.term.reset();
       send({ type: 'resize', pane: p.id, cols: p.term.cols, rows: p.term.rows });
       renderTargets();
@@ -568,10 +569,12 @@ ws.addEventListener('message', ev => {
     const r = rounds.find(x => x.ts === msg.ts);
     if (r) r.winnerKind = msg.kind;
   } else if (msg.type === 'judging') {
+    if (msg.ts && msg.ts !== compareTs) return; // a verdict for a different round than the one on screen
     const v = $('verdict');
     v.classList.add('open');
     v.innerHTML = `<div class="v-head">${ICONS.scale}Judging with ${esc(kindName(msg.kind))}</div>Reading every answer. This can take a minute.`;
   } else if (msg.type === 'judgement') {
+    if (msg.ts && msg.ts !== compareTs) return;
     const v = $('verdict');
     v.classList.add('open');
     v.innerHTML = `<div class="v-head">${ICONS.scale}Verdict from ${esc(kindName(msg.kind))}</div>`;
@@ -579,12 +582,11 @@ ws.addEventListener('message', ev => {
   } else if (msg.type === 'playbooks') {
     playbooks = msg.items || []; setPlaybooks();
   } else if (msg.type === 'modelsUpdating') {
-    toast('Refreshing model lists. The model menus in the panes will flash.', 'restart');
+    toast('Refreshing the model lists from each CLI. Idle Claude and Codex panes will flash their model menu for a moment.', 'restart');
   } else if (msg.type === 'models') {
     modelsCfg = msg.config || {};
-    repopulateKnobs();
-    toast(`Models: ${msg.report}`);
-    if (applyLatestPending) { applyLatestPending = false; applyLatestModels(); }
+    panes.forEach(p => p.updateChip?.());
+    if (!msg.quiet) toast(`Model lists refreshed: ${msg.report}`);
   } else if (msg.type === 'notes') {
     notesText = msg.text || '';
     panes.forEach(p => { if (p.noteEl && document.activeElement !== p.noteEl) p.noteEl.value = notesText; });
@@ -693,30 +695,8 @@ function setMeter(open) {
 $('meterBtn').addEventListener('click', () => setMeter(!meterBar.classList.contains('open')));
 if (load('vibedeck-meterbar') === '1') setMeter(true);
 
-// ---------- models refresh ----------
-function repopulateKnobs() {
-  panes.forEach(p => (p.knobSels || []).forEach(({ knob, sel }) => {
-    const cur = sel.value;
-    const choices = choicesFor(p.kind, knob);
-    sel.innerHTML = `<option value="">${knob.placeholder}</option>` + choices.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
-    if (choices.includes(cur)) sel.value = cur;
-  }));
-}
-// refresh the lists from the CLIs, then jump every pane to the newest model in its list
-let applyLatestPending = false;
-$('modelsBtn').addEventListener('click', () => { applyLatestPending = true; send({ type: 'updateModels' }); });
-function applyLatestModels() {
-  const moved = [];
-  panes.forEach(p => (p.knobSels || []).forEach(({ knob, sel }) => {
-    if (knob.list !== 'models') return;
-    const choices = choicesFor(p.kind, knob);
-    if (!choices.length || sel.value === choices[0]) return;
-    sel.value = choices[0];
-    sel.dispatchEvent(new Event('change'));
-    moved.push(`${paneTitle(p)} to ${choices[0]}`);
-  }));
-  toast(moved.length ? `Switched ${moved.join(', ')}` : 'Every pane is already on the newest model.', 'restart');
-}
+// ---------- models refresh: re-read each CLI's model list (picks stay as they are) ----------
+$('modelsBtn').addEventListener('click', () => send({ type: 'updateModels' }));
 
 // ---------- shortcuts help ----------
 $('helpBtn').addEventListener('click', () => $('helpOverlay').classList.add('open'));
@@ -736,9 +716,12 @@ function setJudges(list) {
   if (saved && list.includes(saved)) judgeKindEl.value = saved;
 }
 judgeKindEl.addEventListener('change', () => store(JUDGE_KEY, judgeKindEl.value));
-$('judgeBtn').addEventListener('click', () => send({ type: 'judge', kind: judgeKindEl.value }));
+// the judge reads the round on screen, whether it is the live round or one opened from History
+let compareTs = 0;
+$('judgeBtn').addEventListener('click', () => send({ type: 'judge', kind: judgeKindEl.value, ts: compareTs }));
 
 function renderCompare(round) {
+  compareTs = round.ts || 0;
   const cols = $('cmpCols');
   cols.innerHTML = '';
   $('verdict').classList.remove('open');
@@ -753,10 +736,10 @@ function renderCompare(round) {
     col.style.setProperty('--kind', color(r.kind));
     col.innerHTML = `
       <div class="col-head">
-        <span class="nm">${esc(kindName(r.kind))}</span><span class="wins">${wins[r.kind] ? wins[r.kind] + ' wins' : ''}</span>
+        <span class="nm">${esc(kindName(r.kind))}</span>${r.model ? `<span class="ranon" title="The model that wrote this answer, from ${esc(kindName(r.kind))}'s own log">${esc(ranLabel(r.kind, r.model))}</span>` : ''}<span class="wins">${wins[r.kind] ? wins[r.kind] + ' wins' : ''}</span>
         <span class="grow"></span>
         <button class="btn sm ghost copy">${ICONS.copy}<span>Copy</span></button>
-        <button class="btn sm ghost promote" title="Carry this answer into the prompt and keep going from it">${ICONS.promote}Continue from this</button>
+        <button class="btn sm ghost promote" title="Continue from this answer: carries it into the prompt so every pane keeps going from it">${ICONS.promote}Continue</button>
         <button class="btn sm ghost win">${ICONS.award}Winner</button>
       </div>
       <div class="cmp-body"></div>`;

@@ -56,3 +56,13 @@ Added Grok CLI pipelines, Anthropic/OpenAI-compatible API adapters, local Ollama
 - Removed the old pane-driven pipeline code and old-format pipeline templates.
 
 Verified 2026-09-25 on Windows: `npm test` (16 tests, 42 extraction assertions) passed; a headless UI pass covered every page and a full API pipeline (run, approve with note, finish, History) with no console errors; a live Codex -> Claude -> Grok run in a temp folder produced the exact file and a SHIP IT review in 51 seconds.
+
+## 2.2.1: real models, real answers (2026-09-25)
+
+- Models: one catalog (`lib/models.js`) named the way each CLI's own /model menu names them (Opus 5.5, Fable 5.1, Sonnet 5, Haiku 4.5, Opus 5, Fable 5, Opus 4.8 to 4.6; GPT-6-Astra/Sol/Luna, GPT-5.6-Sol/Terra/Luna, GPT-5.5; Grok 4.7, 4.7 Fast, 4.6, 4.5). Every ID was run live and the CLI reported running on exactly that model. The old list held shortcut names ("opus") and stale Codex IDs.
+- Panes launch with the saved model and effort flags, so the pane chip shows what the pane really runs. Changing it restarts the pane and resumes the same conversation (`claude --resume`, `codex resume`, `grok --resume`). Claude and Grok panes launch with `--session-id`, so each pane's conversation log is known exactly.
+- Nothing typed into CLI menus anymore: typing `/model` into Claude had changed the account's default model. Grok's interactive screen saves any `--model` as the user's default; VibeDeck restores the user's own default right after.
+- Answers come from each CLI's conversation log (`lib/transcripts.js`), with exact text, the model that wrote it, and the CLI's own "finished" signal (interrupts, API errors and aborted turns count as finished; a 90 second silence net covers the rest). Rounds settle in seconds instead of guessing from the screen. Terminal scraping is only a fallback.
+- Pipelines: per-stage effort, "Can run commands" switch for Claude and Grok Build stages, and every stage shows the model it ran on. Grok Build without the switch gets file tools only, because Grok ends the run when a blocked command is tried.
+- CLIs start with a clean environment (no `CLAUDECODE` / `CLAUDE_CODE_*` from a parent Claude Code session, no `ELECTRON_RUN_AS_NODE`).
+- Fixes: Codex judge (needed `--skip-git-repo-check`), CLI paths with spaces, the "still answering" check (lost its backslashes), relay/Notes/Sidecar sending an older answer, panes restarted mid-round hanging the round, stale waiting cards after restarts and folder switches, Codex trust prompt detection, judge and Notes running inside the app folder (breaks in the packaged app).

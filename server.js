@@ -5,6 +5,8 @@ const { spawn, spawnSync } = require('child_process');
 const express = require('express');
 const { WebSocketServer } = require('ws');
 const pty = require('@lydell/node-pty');
+const { childEnv } = require('./lib/env');
+const { Terminal: HeadlessTerminal } = require('@xterm/headless');
 
 const PORT = Number(process.env.VIBEDECK_PORT ?? 18801);
 const USER_DATA = process.env.VIBEDECK_DATA_DIR || __dirname;
@@ -52,7 +54,9 @@ const ROSTER = [
 ];
 const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
 // Startup dialogs (folder trust) eat typed input, so queued prompts wait until they are answered.
-const TRUST_DIALOG = /Quick\s*safety\s*check|Do\s*you\s*trust/i;
+// Matched on the dialogs' own option lines so ordinary conversation text can't trigger it.
+// Claude: "Quick safety check ... Yes, I trust this folder"; Codex: "1. Trust and continue".
+const TRUST_DIALOG = /Quick\s*safety\s*check|Yes,\s*I\s*trust\s*this\s*folder|Trust\s*and\s*continue/i;
 const MAX_PANES = 5;
 const BUFFER_MAX = 400 * 1024;
 const ROUND_MAX = 200 * 1024;
@@ -103,7 +107,7 @@ function readVersions() {
     const cmd = kindOf(h.id).cmd;
     const isCmd = IS_WIN && /\.cmd$/i.test(cmd);
     let child;
-    try { child = spawn(isCmd ? 'cmd.exe' : cmd, isCmd ? ['/d', '/c', cmd, '--version'] : ['--version'], { windowsHide: true, env: process.env }); } catch { continue; }
+    try { child = spawn(isCmd ? 'cmd.exe' : cmd, isCmd ? ['/d', '/c', cmd, '--version'] : ['--version'], { windowsHide: true, env: childEnv() }); } catch { continue; }
     let out = '';
     const timer = setTimeout(() => { try { child.kill(); } catch {} }, 15000);
     child.stdout.on('data', d => out += d);
@@ -116,6 +120,12 @@ function readVersions() {
   }
 }
 setTimeout(readVersions, 1500);
+// Grok lists its models headlessly, so its list and default stay current without any clicks
+setTimeout(async () => {
+  if (!HEALTH.find(h => h.id === 'grok')?.ok) return;
+  const g = await grokModels();
+  if (g.length) { setModels('grok', g, false); broadcastWs({ type: 'models', config: modelsCfg, report: 'Grok list checked', quiet: true }); }
+}, 2500);
 // judge kinds with a reliable non-interactive mode (claude -p, codex exec).
 // grok has no clean headless path — deliberately not offered.
 const JUDGE_KINDS = HEALTH.filter(h => h.ok && ['claude', 'codex'].includes(h.id)).map(h => h.id);
@@ -184,7 +194,7 @@ function readRuns(){
 }
 function saveRun(status){
   const entry={id:status.id,ts:status.startedAt,finishedAt:Date.now(),name:status.name,request:status.request,cwd:status.cwd,state:status.state,error:status.state==='error'?status.text:'',
-    steps:status.steps,outputs:status.outputs.map(o=>({kind:o.kind,role:o.role,model:o.model,ms:o.ms,edited:!!o.edited,text:o.text.slice(0,64*1024)}))};
+    steps:status.steps,outputs:status.outputs.map(o=>({kind:o.kind,role:o.role,model:o.model,effort:o.effort,ranOn:o.ranOn,ms:o.ms,edited:!!o.edited,text:o.text.slice(0,64*1024)}))};
   const items=readRuns().filter(r=>r.id!==entry.id).slice(-(RUNS_MAX-1));items.push(entry);
   try {fs.writeFileSync(RUNS_FILE,items.map(r=>JSON.stringify(r)).join('\n')+'\n');} catch(e){slog(`runs write failed: ${e.message}`);}
   broadcastWs({type:'pipelineRunSaved',run:entry});
@@ -252,38 +262,114 @@ function flushOut(id, session) {
   if (sessions.get(id) === session) broadcastWs({ type: 'data', pane: id, data: out });
 }
 
-function spawnPane(kindId, instanceId, extraArgs, yolo) {
+// Model + effort the user picked for each CLI (state.models), turned into that CLI's launch flags.
+// Only validated values ever reach the command line.
+const MODEL_ID = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,149}$/;
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+function paneModel(kind) {
+  const m = (state.models || {})[kind] || {};
+  return { model: MODEL_ID.test(m.model || '') ? m.model : '', effort: EFFORTS.includes(m.effort) ? m.effort : '' };
+}
+// resumeId: reopen that conversation (used when the model changes, so the pane keeps its context).
+// newId: the conversation ID a fresh Claude or Grok pane starts with, so its log is known exactly.
+function modelArgs(kind, resumeId, newId) {
+  if (!['claude', 'codex', 'grok'].includes(kind)) return '';
+  const { model, effort } = paneModel(kind);
+  const args = [];
+  if (model) args.push(kind === 'codex' ? '-m' : '--model', model);
+  if (effort) args.push(...(kind === 'codex' ? ['-c', `model_reasoning_effort=${effort}`] : ['--effort', effort]));
+  if (resumeId && SESSION_ID.test(resumeId)) {
+    if (kind === 'codex') return ['resume', ...args, resumeId].join(' ');
+    args.push('--resume', resumeId);
+  } else if (newId && SESSION_ID.test(newId) && kind !== 'codex') args.push('--session-id', newId);
+  return args.join(' ');
+}
+// The conversation a pane is in. Claude and Grok panes carry the ID they were launched with.
+// Codex can't be given an ID, so only a log that matched a prompt this pane sent counts.
+const SESSION_ID = /^[0-9a-fA-F-]{16,64}$/;
+function sessionIdOf(id) {
+  const s = sessions.get(id);
+  if (!s) return '';
+  if (s.sessionId) {
+    // resuming needs a conversation that exists: a pane nobody typed into has no log yet
+    const log = logPathFor(s.kind, state.cwd, s.sessionId);
+    return log && fs.existsSync(log) ? s.sessionId : '';
+  }
+  const found = (path.basename(s.transcriptFile || '').match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i) || [])[1] || '';
+  return SESSION_ID.test(found) ? found : '';
+}
+
+// Grok's interactive screen saves the --model it was launched with as the user's global default
+// (~/.grok/config.toml, [models] default = "..."), and has no option to skip that. A pane's model
+// pick must not change the user's own default, so VibeDeck puts it back right after Grok writes.
+const GROK_CONFIG = path.join(HOME, '.grok', 'config.toml');
+let grokDefault = null, grokGuardUntil = 0;
+function readGrokDefault() { try { return fs.readFileSync(GROK_CONFIG, 'utf8').match(/^default = "([^"]*)"/m)?.[1] || null; } catch { return null; } }
+function restoreGrokDefault() {
+  if (!grokDefault) return;
+  try {
+    const txt = fs.readFileSync(GROK_CONFIG, 'utf8');
+    const now = txt.match(/^default = "([^"]*)"/m)?.[1];
+    if (now && now !== grokDefault) {
+      fs.writeFileSync(GROK_CONFIG, txt.replace(/^default = "[^"]*"/m, `default = "${grokDefault}"`));
+      slog(`kept Grok's default model as ${grokDefault} (a pane launched with ${now})`);
+    }
+  } catch {}
+}
+function guardGrokDefault() {
+  // snapshot the user's default only when no guard is already running, so overlapping pane
+  // launches can't capture a value Grok itself just wrote
+  if (Date.now() > grokGuardUntil) grokDefault = readGrokDefault();
+  grokGuardUntil = Date.now() + 20000;
+  for (const ms of [3000, 8000, 15000]) setTimeout(restoreGrokDefault, ms);
+}
+
+// signInArgs: a provider login command ("auth login"); every other launch uses the saved model.
+function spawnPane(kindId, instanceId, signInArgs, resumeId) {
   const entry = kindOf(kindId);
   const id = instanceId || `${kindId}-${++instanceSeq}`;
-  if (!entry.cmd) { // PTY-less pane (meter): client renders it as an iframe
-    sessions.set(id, { kind: kindId, proc: null, alive: true, buffer: '', extraArgs: '', yolo: false,
+  if (!entry.cmd) { // PTY-less pane (notes): no process
+    sessions.set(id, { kind: kindId, proc: null, alive: true, buffer: '', extraArgs: '',
                        roundOut: '', inRound: false, lastDataTs: 0, queue: [] });
     return id;
   }
-  yolo = false; // Release builds retain the provider permission checks.
-  const cmd = entry.cmd + (entry.flags && yolo ? ' ' + entry.flags : '') + (extraArgs ? ' ' + extraArgs : '');
+  const sessionId = ['claude', 'grok'].includes(kindId) && !signInArgs
+    ? (resumeId && SESSION_ID.test(resumeId) ? resumeId : require('node:crypto').randomUUID()) : '';
+  const extraArgs = signInArgs || modelArgs(kindId, resumeId, sessionId);
+  const picked = signInArgs ? { model: '', effort: '' } : paneModel(kindId);
+  // A CLI installed under a path with spaces ("C:\Program Files\nodejs\claude.cmd") must be quoted.
+  // extraArgs are only validated tokens: model IDs, effort names, session IDs, "auth login".
+  const isFile = fs.existsSync(entry.cmd);
+  const exe = !isFile ? entry.cmd : IS_WIN ? `"${entry.cmd}"` : `'${entry.cmd.replace(/'/g, `'\\''`)}'`;
+  const cmd = exe + (extraArgs ? ' ' + extraArgs : '');
   slog(`spawn ${id}: ${cmd}`);
+  if (kindId === 'grok' && picked.model) guardGrokDefault();
   let proc;
   try {
-    // windows: cmd.exe /c runs the .cmd shims; mac/linux: login shell so the
-    // user's PATH (homebrew, nvm) is loaded before the CLI launches
-    proc = pty.spawn(IS_WIN ? 'cmd.exe' : USER_SHELL, IS_WIN ? ['/c', cmd] : ['-lc', cmd], {
+    if (IS_WIN && /["%]/.test(entry.cmd)) throw Error(`unsupported CLI path: ${entry.cmd}`);
+    // windows: cmd.exe runs the .cmd shims. One pre-quoted command line (node-pty passes a string
+    // through as-is); /s makes cmd strip only the outer quotes, so the quoted path survives.
+    // mac/linux: login shell so the user's PATH (homebrew, nvm) is loaded before the CLI launches
+    proc = pty.spawn(IS_WIN ? 'cmd.exe' : USER_SHELL, IS_WIN ? `/d /s /c "${cmd}"` : ['-lc', cmd], {
       name: 'xterm-256color',
       cols: 100,
       rows: 40,
       cwd: state.cwd,
-      env: process.env,
+      env: childEnv(),
     });
   } catch (e) {
     slog(`spawn FAILED ${id}: ${e.message}`);
-    const dead = { kind: kindId, proc: null, buffer: `[failed to launch: ${e.message}]`, alive: false,
-                   extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false, lastDataTs: 0, queue: [] };
+    const dead = { kind: kindId, proc: null, buffer: `[failed to launch: ${e.message}]`, alive: false, signIn: !!signInArgs,
+                   extraArgs: extraArgs || '', ...picked, roundOut: '', inRound: false, lastDataTs: 0, queue: [] };
     sessions.set(id, dead);
     setTimeout(() => broadcastWs({ type: 'exit', pane: id, code: -1 }), 100);
     return id;
   }
-  const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', yolo, roundOut: '', inRound: false,
-                    lastDataTs: Date.now(), spawnTs: Date.now(), queue: [], pendingOut: '', flushTimer: null };
+  const session = { kind: kindId, proc, buffer: '', alive: true, extraArgs: extraArgs || '', signIn: !!signInArgs, sessionId, ...picked, roundOut: '', inRound: false,
+                    lastDataTs: Date.now(), spawnTs: Date.now(), queue: [], pendingOut: '', flushTimer: null,
+                    // an invisible copy of the pane's screen: dialog checks read what is on screen now,
+                    // not raw output that the CLI has since painted over
+                    screen: new HeadlessTerminal({ cols: 100, rows: 40, scrollback: 0, allowProposedApi: true }) };
   sessions.set(id, session);
 
   // guard against stale events: after a restart/replace, the killed process's
@@ -291,13 +377,17 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
   proc.onData((data) => {
     if (sessions.get(id) !== session) return;
     session.lastDataTs = Date.now();
+    session.screen?.write(data);
     session.buffer = (session.buffer + data).slice(-BUFFER_MAX);
     if (session.inRound) session.roundOut = (session.roundOut + data).slice(-ROUND_MAX);
     session.pendingOut += data;
     if (!session.flushTimer) session.flushTimer = setTimeout(() => { session.flushTimer = null; flushOut(id, session); }, FLUSH_MS);
   });
   proc.onExit(({ exitCode }) => {
+    if (kindId === 'grok' && picked.model) setTimeout(restoreGrokDefault, 1500);
     session.alive = false;
+    try { session.screen?.dispose(); } catch {}
+    session.screen = null;
     if (sessions.get(id) !== session) return;
     flushOut(id, session); // last output must land before the exit banner
     slog(`exit ${id} code ${exitCode}`);
@@ -306,12 +396,22 @@ function spawnPane(kindId, instanceId, extraArgs, yolo) {
   return id;
 }
 
+// The text currently visible in a pane (its invisible screen copy), or the raw tail as a fallback.
+function screenText(s) {
+  const t = s.screen;
+  if (!t) return stripAnsi(s.buffer.slice(-1500));
+  const b = t.buffer.active, lines = [];
+  for (let i = b.viewportY; i < b.viewportY + t.rows && i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) || '');
+  return lines.join('\n');
+}
+
 // a pane is ready for a typed prompt once its input UI has painted and it has
 // gone quiet — fresh CLIs (npm shims, trust dialogs, init) silently eat early text
 function isReady(s) {
   if (!s.alive || s.buffer.length < 50 || Date.now() - s.lastDataTs < 1200) return false;
   const tail = stripAnsi(s.buffer.slice(-4000));
-  if (TRUST_DIALOG.test(stripAnsi(s.buffer.slice(-1500)))) return false;
+  // a pane showing any waiting screen must not get typed prompts: they would answer the question
+  if (s.waiting || TRUST_DIALOG.test(screenText(s))) return false;
   const pat = kindOf(s.kind).ready;
   return !pat || pat.test(tail);
 }
@@ -321,6 +421,7 @@ function writePrompt(s, text) {
   // never submits (claude shows "[Pasted text #N]" with the prompt stuck in the box)
   const delay = text.includes('\n') ? Math.min(3000, 600 + text.split('\n').length * 25) : 150;
   setTimeout(() => { if (s.alive) s.proc.write('\r'); }, delay);
+  s.promptWrittenAt = Date.now() + delay; // the round watcher re-presses Enter if the CLI never logged it
 }
 // flush queued prompts when their pane becomes ready. The 30s failsafe covers
 // panes that never go quiet (grok animates constantly) but must NOT fire while
@@ -328,7 +429,7 @@ function writePrompt(s, text) {
 setInterval(() => {
   for (const s of sessions.values()) {
     if (!s.queue.length || !s.alive) { if (!s.alive) s.queue = []; continue; }
-    const dialogUp = TRUST_DIALOG.test(stripAnsi(s.buffer.slice(-1500)));
+    const dialogUp = !!s.waiting || TRUST_DIALOG.test(screenText(s));
     if (isReady(s) || (!dialogUp && Date.now() - s.queue[0].ts > 30000)) {
       const item = s.queue.shift();
       if (s.inRound) s.roundOut = ''; // round starts when the prompt actually lands
@@ -343,16 +444,21 @@ setInterval(() => {
 const WAITING = [
   { kinds: ['claude'], test: t => TRUST_DIALOG.test(t), title: 'Claude is asking to trust this folder',
     reason: 'Click into the pane, pick "Yes, I trust this folder" with the arrow keys, then press Enter. Claude asks once per folder.' },
+  { kinds: ['codex'], test: t => TRUST_DIALOG.test(t), title: 'Codex is asking to trust this folder',
+    reason: 'Click into the pane, pick "Trust and continue", then press Enter. Codex asks once per folder.' },
   { kinds: ['codex'], test: t => /Update\s*available/i.test(t) && /Press\s*enter\s*to\s*continue/i.test(t), title: 'Codex has an update',
     reason: 'Pick "Update now" or "Skip" in the pane with the arrow keys, then press Enter.' },
-  { kinds: ['claude', 'codex', 'grok'], test: t => /Select\s*login\s*method|Sign\s*in\s*with\s*ChatGPT|Please\s*run\s*\/login|not\s*logged\s*in/i.test(t), title: 'Sign-in needed',
+  { kinds: ['claude', 'codex', 'grok'], test: t => /Select\s*login\s*method|Sign\s*in\s*with\s*ChatGPT|Please\s*run\s*\/login/i.test(t), title: 'Sign-in needed',
     reason: 'This CLI is not signed in. Follow the sign-in steps in the pane, or use Connections to start the provider login.' },
 ];
 setInterval(() => {
   for (const [id, s] of sessions) {
     if (!s.proc || !s.alive) { if (s.waiting) { s.waiting = null; broadcastWs({ type: 'paneWaiting', pane: id, reason: '' }); } continue; }
-    const tail = stripAnsi(s.buffer.slice(-2500));
-    const hit = WAITING.find(w => w.kinds.includes(s.kind) && w.test(tail));
+    // a pane that already took this round's prompt is answering, not sitting on a startup dialog;
+    // skipping it keeps words like "sign in" inside an answer from gating the pane
+    const answering = lastRound?.pending?.has(id) && !s.queue.length;
+    const tail = screenText(s);
+    const hit = answering ? null : WAITING.find(w => w.kinds.includes(s.kind) && w.test(tail));
     const key = hit ? hit.title : null;
     if (key !== (s.waiting || null)) {
       s.waiting = key;
@@ -369,7 +475,7 @@ function reorderSessions(order) {
 
 const paneInfo = id => {
   const s = sessions.get(id);
-  return { id, kind: s.kind, label: kindOf(s.kind).label, yolo: s.yolo !== false };
+  return { id, kind: s.kind, label: kindOf(s.kind).label, model: s.model || '', effort: s.effort || '', signIn: !!s.signIn };
 };
 
 function readHistory(n = 100) {
@@ -427,30 +533,38 @@ function readPlaybooks() {
   } catch { return []; }
 }
 
-// ---------- model lists (models.json = source of truth for the knob dropdowns) ----------
+// ---------- model lists (lib/models.js catalog, refreshed by "update models") ----------
 const MODELS_FILE = path.join(USER_DATA, 'models.json');
-let modelsCfg = {
-  claude: { models: ['fable', 'opus', 'sonnet', 'haiku'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-  codex:  { models: ['gpt-6-astra', 'gpt-5.6', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex-spark'], efforts: ['low', 'medium', 'high', 'xhigh'] },
-  grok:   { models: ['grok-4.5', 'grok-composer-2.5-fast'], efforts: ['low', 'medium', 'high'] },
-};
-try { modelsCfg = { ...modelsCfg, ...JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')) }; } catch {}
+const modelsLib = require('./lib/models');
+let modelsCfg = modelsLib.defaultModels();
+// models.json written by 2.1 and earlier held shortcut names ("opus") and stale codex IDs; only v2 files are trusted
+try { const saved = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')); if (saved.version === 2) { delete saved.version; modelsCfg = { ...modelsCfg, ...saved }; } } catch {}
 function saveModels() {
-  try { fs.writeFileSync(MODELS_FILE, JSON.stringify(modelsCfg, null, 2)); } catch (e) { slog(`models.json write failed: ${e.message}`); }
+  try { fs.writeFileSync(MODELS_FILE, JSON.stringify({ version: 2, ...modelsCfg }, null, 2)); } catch (e) { slog(`models.json write failed: ${e.message}`); }
+}
+// replace a kind's model list, keeping readable labels (known ones from the catalog, new ones derived)
+function setModels(kind, pairs, keepMissing) {
+  const cfg = modelsCfg[kind];
+  const ids = pairs.map(p => p[0]);
+  for (const [id, label] of pairs) cfg.labels[id] = label || cfg.labels[id] || modelsLib.labelFor(kind, id);
+  cfg.models = keepMissing ? [...ids, ...cfg.models.filter(id => !ids.includes(id))] : ids;
 }
 
 // grok is the only CLI that can list its models headlessly
 function grokModels() {
   return new Promise(res => {
     let child;
-    try { child = spawn(kindOf('grok').cmd, ['models'], { env: process.env }); } catch { return res([]); }
+    try { child = spawn(kindOf('grok').cmd, ['models'], { env: childEnv(), windowsHide: true }); } catch { return res([]); }
     let out = '';
     const timer = setTimeout(() => { try { child.kill(); } catch {} }, 15000);
     child.stdout.on('data', d => out += d);
     child.on('error', () => { clearTimeout(timer); res([]); });
     child.on('close', () => {
       clearTimeout(timer);
-      res([...out.matchAll(/^\s*[*-]\s+(\S+)/gm)].map(m => m[1]).filter(x => x.startsWith('grok')));
+      // "  * grok-4.5 (default)": the star marks Grok's own default model
+      const def = out.match(/^\s*\*\s+(grok\S+)/m)?.[1];
+      if (def) modelsCfg.grok.defaultLabel = modelsCfg.grok.labels[def] || modelsLib.labelFor('grok', def);
+      res([...out.matchAll(/^\s*[*-]\s+(grok\S+)/gm)].map(m => [m[1], modelsCfg.grok.labels[m[1]] || modelsLib.labelFor('grok', m[1])]));
     });
   });
 }
@@ -461,7 +575,7 @@ function scrapeModelMenu(kind) {
   return new Promise(res => {
     const id = firstPaneOfKind(kind);
     const s = id && sessions.get(id);
-    if (!s || !isReady(s)) return res(null); // no pane, or busy — don't type into it
+    if (!s || !isReady(s)) return res(null); // no pane, or busy: don't type into it
     const before = s.buffer.length;
     s.proc.write('/model');
     setTimeout(() => { if (s.alive) s.proc.write('\r'); }, 350);
@@ -479,45 +593,67 @@ async function updateModels() {
   updatingModels = true;
   const report = [];
   try {
-    const g = await grokModels();
-    if (g.length) { modelsCfg.grok.models = g; report.push(`grok ${g.length} (live)`); }
-    else report.push('grok failed — kept old');
+    if (HEALTH.find(h => h.id === 'grok')?.ok) {
+      const g = await grokModels();
+      if (g.length) { setModels('grok', g, false); report.push(`Grok ${g.length} models`); }
+      else report.push('Grok list unavailable, kept the current one');
+    }
     for (const kind of ['claude', 'codex']) {
       let painted = null;
       for (let tries = 0; tries < 3 && painted === null; tries++) {
         if (tries) await new Promise(r => setTimeout(r, 4000));
         painted = await scrapeModelMenu(kind);
       }
-      if (painted === null) { report.push(`${kind} pane busy/missing — kept old`); continue; }
-      let models;
-      if (kind === 'claude') {
-        // menu entries: "2. Opus  Opus 4.8 · …" — the /model alias is the first
-        // word, lowercased. [a-z]+ after the initial cap stops at descriptions.
-        models = [...new Set([...painted.matchAll(/\d+\.\s*([A-Za-z][a-z]+)/g)]
-          .map(m => m[1].toLowerCase()).filter(n => !['default', 'custom'].includes(n)))];
-      } else {
-        // case-sensitive so a fused capitalized description ("gpt-5.4Strong") ends the match
-        models = [...new Set([...painted.matchAll(/gpt-[a-z0-9.]+(?:-[a-z0-9.]+)*/g)]
-          .map(m => m[0].replace(/[.-]+$/, '')))];
-        // menu lists the pane's CURRENT model first — sort newest version to the top instead
-        const ver = n => parseFloat((n.match(/(\d+(?:\.\d+)?)/) || [0, 0])[1]);
-        models.sort((a, b) => ver(b) - ver(a));
-      }
-      // the pane chrome alone shows the CURRENT model, so demand at least 2 to trust a scrape
-      if (models.length >= 2) { modelsCfg[kind].models = models; report.push(`${kind} ${models.length} (scraped)`); }
-      else report.push(`${kind} scrape unclear — kept old`);
+      if (painted === null) { report.push(`${kind === 'claude' ? 'Claude' : 'Codex'} needs an idle pane to read its menu, kept the current list`); continue; }
+      const pairs = modelsLib.parseMenu(kind, painted);
+      // the pane chrome alone shows the CURRENT model, so demand at least 2 to trust a scrape.
+      // Claude's menu scrolls, so models below the fold are kept.
+      if (pairs.length >= 2) { setModels(kind, pairs, kind === 'claude'); report.push(`${kind === 'claude' ? 'Claude' : 'Codex'} ${modelsCfg[kind].models.length} models`); }
+      else report.push(`${kind === 'claude' ? 'Claude' : 'Codex'} menu unclear, kept the current list`);
     }
     saveModels();
   } finally { updatingModels = false; }
-  slog(`update models: ${report.join(' · ')}`);
-  broadcastWs({ type: 'models', config: modelsCfg, report: report.join(' · ') });
+  slog(`update models: ${report.join(', ')}`);
+  broadcastWs({ type: 'models', config: modelsCfg, report: report.join(', ') });
+}
+
+// ---------- answers: read from each CLI's own log, terminal scraping as the fallback ----------
+const { readAnswer, logPathFor } = require('./lib/transcripts');
+// log files already matched to other live Codex panes (two panes = two sessions)
+function claimedLogs(id, kind) {
+  return [...sessions.entries()].filter(([oid, o]) => oid !== id && o.kind === kind && o.transcriptFile).map(([, o]) => o.transcriptFile);
+}
+// This pane's answer to `prompt` (or its latest answer when prompt is empty).
+// Claude and Grok panes read exactly their own session log. Codex logs are found by the prompt
+// this pane sent; without a prompt only a log already matched that way is trusted.
+function transcriptAnswer(id, prompt, sinceTs) {
+  const s = sessions.get(id);
+  if (!s || !['claude', 'codex', 'grok'].includes(s.kind)) return null;
+  try {
+    const own = s.sessionId ? logPathFor(s.kind, state.cwd, s.sessionId) : null;
+    if (!own && !prompt && !s.transcriptFile) return null;
+    const found = readAnswer({ kind: s.kind, cwd: state.cwd, prompt, sinceTs: sinceTs || s.spawnTs || 0,
+      file: own || (!prompt ? s.transcriptFile : null), exclude: claimedLogs(id, s.kind), prefer: s.transcriptFile });
+    if (found) s.transcriptFile = found.file;
+    return found;
+  } catch (e) { slog(`transcript read failed for ${id}: ${e.message}`); return null; }
+}
+// What "-> notes", "-> sidecar" and relay send: the pane's latest answer, even if you kept
+// chatting in the pane after the last broadcast.
+function paneAnswer(id) {
+  const s = sessions.get(id);
+  const found = transcriptAnswer(id, '', 0);
+  if (found?.text) return { text: found.text.slice(-12 * 1024), fromLog: true };
+  return { text: extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024), fromLog: false };
 }
 
 function roundResponses() {
   if (!lastRound) return [];
   return lastRound.targets.filter(id => sessions.has(id)).map(id => {
     const s = sessions.get(id);
-    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text: extractAnswer(s.roundOut, lastRound.prompt), rawLen: s.roundOut.length };
+    const found = lastRound.answers?.[id] || transcriptAnswer(id, lastRound.prompt, lastRound.ts);
+    const text = found?.text || extractAnswer(s.roundOut, lastRound.prompt);
+    return { pane: id, kind: s.kind, label: kindOf(s.kind).label, text, model: found?.model || '', source: found?.text ? 'log' : 'screen', rawLen: s.roundOut.length };
   });
 }
 
@@ -525,12 +661,16 @@ function roundResponses() {
 // Answers go in BLIND — no model labels — so a judge can't favor its own entry;
 // the label legend is prepended to the verdict after it comes back.
 let judging = false;
-function runJudge(kind) {
+// ts: the round shown in Compare (a saved round from History, or the live one)
+function runJudge(kind, ts) {
   if (judging) return;
   if (!JUDGE_KINDS.includes(kind)) kind = JUDGE_KINDS[0];
-  const responses = roundResponses().filter(r => r.text.length > 10);
-  if (!lastRound || responses.length < 2) {
-    broadcastWs({ type: 'judgement', ok: false, kind, text: 'Need a broadcast round with at least 2 answers to judge.' });
+  const saved = ts && ts !== lastRound?.ts ? readRounds().find(r => r.ts === ts) : null;
+  const round = saved || (lastRound ? { ts: lastRound.ts, prompt: lastRound.prompt, responses: roundResponses() } : null);
+  const responses = (round?.responses || []).filter(r => (r.text || '').length > 10)
+    .map(r => ({ ...r, label: r.model ? `${r.label} (${r.model})` : r.label }));
+  if (!round || responses.length < 2) {
+    broadcastWs({ type: 'judgement', ok: false, kind, ts, text: 'Need a round with at least 2 answers to judge.' });
     return;
   }
   judging = true;
@@ -539,7 +679,7 @@ function runJudge(kind) {
 `You are judging answers from different AI coding assistants to the same prompt. You are not told which assistant wrote which answer. The transcripts may contain terminal rendering noise; judge the substance.
 
 THE PROMPT WAS:
-${(lastRound.prompt || '').slice(0, 2000)}
+${(round.prompt || '').slice(0, 2000)}
 
 ${parts.join('\n\n')}
 
@@ -551,10 +691,10 @@ Give your verdict:
 Plain text only. Do not use any tools. Do not read or write any files. Reply directly.`;
 
   // both judges read the prompt from stdin: claude -p, codex exec -
-  const cmd = kind === 'codex' ? 'codex exec -' : 'claude -p';
+  const cmd = kind === 'codex' ? 'codex exec --skip-git-repo-check -' : 'claude -p';
   const child = IS_WIN
-    ? spawn('cmd.exe', ['/c', cmd], { cwd: __dirname, env: process.env })
-    : spawn(USER_SHELL, ['-lc', cmd], { cwd: __dirname, env: process.env });
+    ? spawn('cmd.exe', ['/c', cmd], { cwd: require('os').tmpdir(), env: childEnv(), windowsHide: true })
+    : spawn(USER_SHELL, ['-lc', cmd], { cwd: require('os').tmpdir(), env: childEnv(), windowsHide: true });
   let out = '', err = '';
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 180000);
   child.stdout.on('data', d => out += d);
@@ -566,7 +706,7 @@ Plain text only. Do not use any tools. Do not read or write any files. Reply dir
     judging = false;
     const legend = responses.map((r, i) => `Answer ${i + 1} = ${r.label}`).join(' · ');
     const verdict = stripAnsi(out).trim(); // codex exec output can carry ANSI color
-    broadcastWs({ type: 'judgement', ok: !!verdict, kind,
+    broadcastWs({ type: 'judgement', ok: !!verdict, kind, ts: round.ts,
       text: verdict ? `${legend}\n\n${verdict}` : ('Judge failed: ' + stripAnsi(err).slice(0, 400)) });
   });
   try { child.stdin.write(judgePrompt); child.stdin.end(); } catch {}
@@ -588,8 +728,8 @@ function pushToNotes(fromId) {
   const s = sessions.get(fromId);
   if (!s) return;
   if (distilling) return broadcastWs({ type: 'notesError', text: 'still writing the last note — give it a few seconds' });
-  const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
-  if (src.length < 40) {
+  const { text: src, fromLog } = paneAnswer(fromId);
+  if (fromLog ? !src.trim() : src.length < 40) {
     // tiny after cleanup = pane is mid-answer (spinners only) or truly idle
     const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
     return broadcastWs({ type: 'notesError', text: busy
@@ -620,8 +760,8 @@ Do not use any tools. Do not read or write any files. Reply directly.
 ${src}
 ---`;
   const child = IS_WIN
-    ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: __dirname, env: process.env })
-    : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: __dirname, env: process.env });
+    ? spawn('cmd.exe', ['/c', 'claude', '-p'], { cwd: require('os').tmpdir(), env: childEnv(), windowsHide: true })
+    : spawn(USER_SHELL, ['-lc', 'claude -p'], { cwd: require('os').tmpdir(), env: childEnv(), windowsHide: true });
   let out = '';
   const timer = setTimeout(() => { try { child.kill(); } catch {} }, 90000);
   child.stdout.on('data', d => out += d);
@@ -656,7 +796,7 @@ ${src}
 
 const PIPE_STABLE_MS = 8000;
 const PIPE_STEP_TIMEOUT_MS = 10 * 60 * 1000;
-const BUSY_TAIL = /escs+tos+interrupt/i;
+const BUSY_TAIL = /esc\s+to\s+interrupt/i;
 
 // shared settle check (broadcast rounds): the answer is done
 // when its cleaned text stops growing and the pane looks idle. st carries
@@ -688,17 +828,43 @@ setInterval(() => {
   const gaveUp = Date.now() - r.ts > PIPE_STEP_TIMEOUT_MS;
   for (const [id, st] of r.pending) {
     const s = sessions.get(id);
-    if (s && s.alive && !gaveUp) {
+    // restarted, replaced, folder switched or model changed: the session that got the prompt is gone
+    const swapped = s && st.session && s !== st.session;
+    if (s && s.alive && !gaveUp && !swapped) {
       if (s.queue.length) continue;
+      // First choice: the CLI's own log says the turn is finished. While the log shows the
+      // prompt but no finish, the CLI is still working, so screen guesses are ignored.
+      if (['claude', 'codex', 'grok'].includes(s.kind) && Date.now() - (st.logCheck || 0) >= 2000) {
+        st.logCheck = Date.now();
+        st.log = transcriptAnswer(id, r.prompt, r.ts);
+        if (st.log && st.log.mtime !== st.logMtime) { st.logMtime = st.log.mtime; st.logChangedAt = Date.now(); }
+      }
+      // A CLI logs a prompt the moment it is submitted. Typed but still unlogged 4s later means the
+      // Enter was swallowed (Codex treats a fast burst of typing as a paste), so press it again.
+      if (!st.log && ['claude', 'codex', 'grok'].includes(s.kind) && s.promptWrittenAt && Date.now() - s.promptWrittenAt > 4000
+          && (st.enterRetries || 0) < 2 && screenText(s).replace(/\s+/g, ' ').includes(r.prompt.replace(/\s+/g, ' ').trim().slice(0, 24))) {
+        st.enterRetries = (st.enterRetries || 0) + 1;
+        s.promptWrittenAt = Date.now();
+        slog(`re-pressed Enter for ${id}: its prompt was typed but not submitted`);
+        s.proc.write('\r');
+      }
+      if (st.log) {
+        // safety net for turns that end without a finish record: log unchanged for 90s and the
+        // pane silent for 30s means the CLI stopped, so keep what it wrote instead of hanging
+        const stalled = Date.now() - (st.logChangedAt || Date.now()) > 90000 && Date.now() - s.lastDataTs > 30000;
+        if (!(st.log.done || stalled)) continue;
+        if (st.log.text) (r.answers ||= {})[id] = st.log;
+      }
       // fallback: an all-numeric answer ("2 + 2 = 4.") cleans to nothing, so
       // settledAnswer can't see it — but output happened and the pane went
       // raw-silent, which is claude/codex's idle signature. Call it done.
       const quietDone = s.roundOut.length && Date.now() - s.lastDataTs > 15000;
-      if (settledAnswer(s, r.prompt, st) === null && !quietDone) continue;
+      if (!st.log && settledAnswer(s, r.prompt, st) === null && !quietDone) continue;
     }
-    if(!s?.alive || gaveUp){
-      r.pending.delete(id);r.failed=true;
-      broadcastWs({type:'answerFailed',pane:id,text:gaveUp?'Response timed out.':'Terminal exited before completing.'});
+    if (!s?.alive || gaveUp || swapped) {
+      r.pending.delete(id); r.failed = true;
+      if (s) s.queue = []; // a prompt still waiting behind a startup screen must not be typed hours later
+      broadcastWs({ type: 'answerFailed', pane: id, text: gaveUp ? 'Response timed out.' : swapped ? 'The pane restarted before it answered.' : 'Terminal exited before completing.' });
       continue;
     }
     r.pending.delete(id);
@@ -714,7 +880,7 @@ setInterval(() => {
   }
   if (!r.pending.size) {
     const entry = { ts: r.ts, prompt: r.prompt, cwd: state.cwd, winnerKind: null,
-      responses: roundResponses().map(x => ({ pane: x.pane, kind: x.kind, label: x.label, text: x.text.slice(0, 16 * 1024) })) };
+      responses: roundResponses().map(x => ({ pane: x.pane, kind: x.kind, label: x.label, model: x.model, text: x.text.slice(0, 16 * 1024) })) };
     appendRound(entry);
     broadcastWs({ type: 'roundSaved', round: entry });
     broadcastWs({ type: r.failed?'roundFailed':'roundDone', ts: r.ts, count: r.targets.length });
@@ -739,9 +905,9 @@ if(!process.env.VIBEDECK_NO_PANES && !needsFolder()) spawnSavedPanes();
 function pushToSidecar(fromId) {
   const s = sessions.get(fromId);
   if (!s) return;
-  const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+  const { text: src, fromLog } = paneAnswer(fromId);
   const label = kindOf(s.kind).label;
-  if (src.length < 40) {
+  if (fromLog ? !src.trim() : src.length < 40) {
     const busy = Date.now() - s.lastDataTs < 4000 || BUSY_TAIL.test(stripAnsi(s.buffer.slice(-1500)));
     return broadcastWs({ type: 'notice', text: busy ? `${label} is still answering. Let it finish, then send it to Sidecar.` : 'Nothing in that pane to file yet. Broadcast a prompt first.' });
   }
@@ -766,6 +932,7 @@ wss.on('connection', (ws) => {
     health: HEALTH,
     judges: JUDGE_KINDS,
     rounds: readRounds(50),
+    round: lastRound?.pending?.size ? { ts: lastRound.ts, targets: [...lastRound.pending.keys()] } : null,
     playbooks: readPlaybooks(),
     models: modelsCfg,
     notes: readNotes(),
@@ -864,7 +1031,8 @@ wss.on('connection', (ws) => {
       const file = path.join(IMAGE_DIR, `${Date.now()}-${safe}.${ext}`);
       fs.writeFileSync(file, buf);
       slog(`image saved for ${msg.pane}: ${file} (${buf.length} bytes)`);
-      s.proc.write(file + ' ');
+      // quoted when the path has spaces, or the CLI reads it as two words and never attaches it
+      s.proc.write((/\s/.test(file) ? `"${file}"` : file) + ' ');
       broadcastWs({ type: 'imageSaved', pane: msg.pane, file: path.basename(file) });
     } else if (msg.type === 'broadcast') {
       if(!Array.isArray(msg.targets)||typeof msg.data!=='string'||!msg.data.trim()||msg.data.length>32000)return;
@@ -872,7 +1040,7 @@ wss.on('connection', (ws) => {
       const targets = msg.targets.filter(id => { const t = sessions.get(id); return t?.alive && t.proc; });
       if(!targets.length)return notice('Turn on broadcast for at least one live terminal first.');
       lastRound = { ts: Date.now(), prompt: msg.data, targets,
-                    pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0 }])) };
+                    pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0, session: sessions.get(id) }])) };
       // noHist: promoted mega-prompts skip ↑/↓ history (rounds.jsonl still records them)
       if (!msg.noHist) appendHistory(lastRound.ts, msg.data);
       for (const id of targets) {
@@ -886,7 +1054,7 @@ wss.on('connection', (ws) => {
     } else if (msg.type === 'relay' && s) {
       const to = sessions.get(msg.to);
       if (!to || !to.alive || !to.proc) return;
-      const src = extractAnswer(s.roundOut || s.buffer.slice(-24 * 1024), lastRound?.prompt).slice(-12 * 1024);
+      const { text: src } = paneAnswer(msg.pane);
       if (!src) return;
       const fromLabel = kindOf(s.kind).label;
       const text = `Here is output from another AI assistant (${fromLabel}). Use it as context and act on it:\n\n${src}`.replace(/\r?\n/g, '\n');
@@ -899,8 +1067,10 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ type: 'round', prompt: lastRound?.prompt || '', ts: lastRound?.ts || 0, responses: roundResponses() }));
     } else if (msg.type === 'judge') {
       const kind = JUDGE_KINDS.includes(msg.kind) ? msg.kind : JUDGE_KINDS[0];
-      broadcastWs({ type: 'judging', kind });
-      runJudge(kind);
+      const ts = Number.isFinite(msg.ts) ? msg.ts : 0;
+      if (judging) return notice('The judge is still reading the last round.');
+      broadcastWs({ type: 'judging', kind, ts });
+      runJudge(kind, ts);
     } else if (msg.type === 'crown') {
       crownRound(msg.ts, msg.kind);
     } else if (msg.type === 'histdel') {
@@ -943,32 +1113,44 @@ wss.on('connection', (ws) => {
         const order = [...sessions.keys()];
         if (sess.alive) { try { sess.proc.kill(); } catch {} }
         sessions.delete(id);
-        spawnPane(sess.kind, id, sess.extraArgs, sess.yolo);
+        spawnPane(sess.kind, id, sess.signIn ? sess.extraArgs : undefined);
         reorderSessions(order);
       }
       if (!sessions.size && !process.env.VIBEDECK_NO_PANES) spawnSavedPanes();
       saveState();
       broadcastWs({ type: 'cwdChanged', cwd: state.cwd, recents: state.recents, needsFolder: needsFolder() });
+      // every pane is a fresh session now: clear "ended" covers and old waiting cards
+      for (const id of sessions.keys()) broadcastWs({ type: 'restarted', pane: id, info: paneInfo(id) });
     } else if (msg.type === 'resize' && s && s.alive && s.proc) {
       const cols = Math.max(2, msg.cols | 0), rows = Math.max(2, msg.rows | 0);
       try { s.proc.resize(cols, rows); } catch {}
+      try { s.screen?.resize(cols, rows); } catch {}
     } else if (msg.type === 'restart' && s) {
       const order = [...sessions.keys()];
       if (s.alive) { try { s.proc.kill(); } catch {} }
       sessions.delete(msg.pane);
-      // optional msg.args relaunches with new CLI flags (e.g. codex -m gpt-5.4); otherwise keep prior flags
-      spawnPane(s.kind, msg.pane, typeof msg.args === 'string' ? msg.args : s.extraArgs, s.yolo);
+      // relaunches with the saved model and effort (a sign-in pane re-runs its login)
+      spawnPane(s.kind, msg.pane, s.signIn ? s.extraArgs : undefined);
       reorderSessions(order);
-      broadcastWs({ type: 'restarted', pane: msg.pane });
-    } else if (msg.type === 'yolo' && s) {
-      // per-pane skip-permissions toggle: relaunch this pane with/without its flag
+      broadcastWs({ type: 'restarted', pane: msg.pane, info: paneInfo(msg.pane) });
+    } else if (msg.type === 'paneModel' && s && ['claude', 'codex', 'grok'].includes(s.kind)) {
+      // model/effort picked from a pane's chip, remembered per CLI for every future launch.
+      // The pane restarts with the new launch flags and resumes the same conversation, so the
+      // model is guaranteed (no typing into menus) and nothing changes the CLI's global default.
+      const model = String(msg.model || ''), effort = String(msg.effort || '');
+      if ((model && !MODEL_ID.test(model)) || (effort && !EFFORTS.includes(effort))) return notice('That model or effort is not valid.');
+      if (lastRound?.pending?.has(msg.pane)) return notice('This pane is still answering. Change its model after the round finishes.');
+      state.models = { ...(state.models || {}), [s.kind]: { model, effort } };
+      saveState();
+      const resumeId = sessionIdOf(msg.pane);
       const order = [...sessions.keys()];
       if (s.alive) { try { s.proc.kill(); } catch {} }
       sessions.delete(msg.pane);
-      spawnPane(s.kind, msg.pane, s.extraArgs, !!msg.on);
+      spawnPane(s.kind, msg.pane, undefined, resumeId);
+      // the resumed pane is still in the same conversation, so a second switch can resume it too
+      if (resumeId && sessions.get(msg.pane)) sessions.get(msg.pane).transcriptFile = s.transcriptFile;
       reorderSessions(order);
-      broadcastWs({ type: 'restarted', pane: msg.pane });
-      broadcastWs({ type: 'yolo', pane: msg.pane, on: !!msg.on });
+      broadcastWs({ type: 'restarted', pane: msg.pane, info: paneInfo(msg.pane), resumed: !!resumeId });
     } else if (msg.type === 'add') {
       if (!kindOf(msg.kind) || sessions.size >= MAX_PANES) return;
       const id = spawnPane(msg.kind);
@@ -1002,6 +1184,8 @@ wss.on('connection', (ws) => {
 
 function shutdown() {
   for(const s of sessions.values()) { try { s.proc?.kill(); } catch {} }
+  // the process exits before a stopped stage finishes closing, so record the run now
+  if(customRunner?.active) saveRun({...customRunner.status(), state:'cancelled', text:'VibeDeck was closed during this run.'});
   if(customRunner) customRunner.cancel();
   server.close();
   setTimeout(()=>process.exit(0),300).unref();

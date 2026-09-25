@@ -140,9 +140,6 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .pane.dead .dot{background:var(--bad);animation:none;box-shadow:none}
 .pane-head .pname{font-weight:600;font-size:13px;color:var(--pane-title);white-space:nowrap}
 .pane-head .inst{font-family:var(--mono);font-size:11px;color:var(--dim)}
-.chipsel{appearance:none;height:24px;padding:0 20px 0 8px;border-radius:6px;background:var(--chip);color:var(--pane-text);font-family:var(--mono);font-size:11px;border:1px solid var(--chip-border);cursor:pointer;outline:none;max-width:130px;min-width:0;text-overflow:ellipsis;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237d8597' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 5px center;background-size:11px}
-.chipsel:hover{border-color:#343c4e}
-.chipsel option{background:var(--surface);color:var(--text)}
 .pane-head .pstate{font-size:11px;color:var(--dim);white-space:nowrap;font-family:var(--mono)}
 .pane-head .pstate.live{color:var(--run)}
 .bcast{display:flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:6px;font-size:11.5px;font-weight:600;border:1px solid var(--chip-border);color:var(--dim);white-space:nowrap;flex:none}
@@ -278,7 +275,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .pl-name:hover{border-bottom-color:var(--border2)}.pl-name:focus{border-bottom-color:var(--accent-line)}
 .pl-top .select{width:230px}
 .flow{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding-bottom:4px}
-.stage{flex:1 0 250px;min-width:250px;max-width:420px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px 14px;position:relative;display:flex;flex-direction:column;gap:8px}
+.stage{flex:1 1 0;min-width:215px;max-width:420px;container-type:inline-size;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px 14px;position:relative;display:flex;flex-direction:column;gap:8px}
 .stage::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--kind)}
 .stage.s-running{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--run-ring)}
 .stage.s-done{border-color:rgba(74,222,128,.3)}
@@ -295,7 +292,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .stage-actions{display:flex;gap:2px;margin-left:auto}
 .arrow{display:grid;place-items:center;width:30px;color:var(--faint);flex:none}
 .arrow svg.i{width:17px;height:17px}
-.add-stage{flex:none;width:96px;margin-left:10px;border:1px dashed var(--border2);border-radius:var(--radius);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--dim);font-weight:500;font-size:12px}
+.add-stage{flex:none;width:72px;margin-left:10px;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;color:var(--dim);font-weight:500;font-size:12px}
 .add-stage:hover:not(:disabled){color:var(--text);border-color:var(--dim)}
 .request{display:flex;gap:14px;align-items:stretch;padding:14px 14px 14px 16px}
 .request .rq{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -426,14 +423,27 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 
 /* pane headers adapt to each pane's own width */
 .pane{container-type:inline-size}
-.pane-head .knobs{flex:0 1 auto;min-width:0;overflow:hidden}
-.pane-head .chipsel{flex:0 1 auto;min-width:54px}
-.pane-head .chipsel:first-child{max-width:118px}
-.pane-head .chipsel+.chipsel{max-width:84px}
 @container (max-width:500px){
   .pane-head .bcast span{display:none}
   .pane-head .bcast{padding:0 7px}
 }
 @container (max-width:430px){.pane-head .pstate{display:none}}
-@container (max-width:330px){.pane-head .knobs{display:none}}
+@container (max-width:330px){.pane-head .modelchip{display:none}}
 .term .xterm-viewport::-webkit-scrollbar-thumb{background:#1f2430}
+
+/* model + effort side by side in a stage card */
+.stage .two{display:grid;grid-template-columns:minmax(0,1fr) 112px;gap:8px}
+
+
+/* model + effort chip in pane headers, and its menu */
+.modelchip{display:flex;align-items:center;gap:5px;height:24px;padding:0 6px 0 9px;border-radius:6px;background:var(--chip);color:var(--pane-text);font-size:11.5px;font-weight:500;border:1px solid var(--chip-border);white-space:nowrap;min-width:0;max-width:190px;flex:0 1 auto}
+.modelchip span{overflow:hidden;text-overflow:ellipsis}
+.modelchip svg.i{width:11px;height:11px;color:var(--dim);flex:none}
+.modelchip:hover{border-color:#343c4e;color:var(--pane-title)}
+#paneMenu.model-menu{min-width:220px;max-height:70vh;overflow-y:auto}
+#paneMenu.model-menu .menu-item svg.i{color:var(--accent)}
+.menu-note{font-size:11px;color:var(--dim);padding:8px 10px 4px;border-top:1px solid var(--border);margin-top:5px}
+.cmp-col .col-head .ranon{font-size:11.5px;color:var(--text2);border:1px solid var(--border2);border-radius:5px;padding:1px 7px;white-space:nowrap}
+.cmp-col .col-head{flex-wrap:wrap;row-gap:6px}
+/* narrow stage cards stack model over effort */
+@container (max-width:290px){.stage .two{grid-template-columns:1fr}}

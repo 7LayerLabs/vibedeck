@@ -19,8 +19,14 @@
   const providerLabel = step => step.kind === 'api'
     ? (apiConnections.find(c => c.id === step.connectionId)?.name || 'API connection')
     : kindName(step.kind);
-  const stepLabel = step => `${providerLabel(step)}${step.model ? ', ' + step.model : ''}`;
-  const cleanDef = () => ({ name: draft.name, steps: draft.steps.map(s => ({ kind: s.kind, role: s.role, model: s.model || '', instructions: s.instructions || '', ...(s.kind === 'api' ? { connectionId: s.connectionId } : {}) })) });
+  const modelName = (kind, id) => (modelsCfg[kind]?.labels || {})[id] || id;
+  const stepLabel = step => `${providerLabel(step)}, ${step.model ? modelName(step.kind, step.model) : 'default model'}${step.effort ? ', ' + (modelsCfg[step.kind]?.labels?.[step.effort] || step.effort) + ' effort' : ''}${step.commands ? ', can run commands' : ''}`;
+  // did the CLI run on what the stage asked for? grok answers with its "-build" variant of the same model
+  const ranMatches = (step, ranOn) => !step.model || !ranOn || ranOn === step.model || ranOn.startsWith(step.model + '-') || (step.model === 'grok-4.7-build-fast' && ranOn.startsWith('grok-4.7-build-fast'));
+  window.vdRanTag = (step, ranOn) => !ranOn ? '' : ranMatches(step, ranOn)
+    ? `<span class="tag" title="The CLI reported running on this model">Ran on ${esc(ranOn)}</span>`
+    : `<span class="tag edited" title="The stage asked for ${esc(step.model)}">Asked for ${esc(step.model)}, ran on ${esc(ranOn)}</span>`;
+  const cleanDef = () => ({ name: draft.name, steps: draft.steps.map(s => ({ kind: s.kind, role: s.role, model: s.model || '', effort: s.kind === 'api' ? '' : s.effort || '', commands: !!s.commands && s.role === 'Build', instructions: s.instructions || '', ...(s.kind === 'api' ? { connectionId: s.connectionId } : {}) })) });
 
   // tiny, safe markdown: escape first, then fences, inline code, bold and headings
   function md(text) {
@@ -71,6 +77,20 @@
     const api = apiConnections.map(c => `<option value="api:${esc(c.id)}" ${step.kind === 'api' && step.connectionId === c.id ? 'selected' : ''}>API: ${esc(c.name)}</option>`).join('');
     return cli + (api ? `<optgroup label="API and local models">${api}</optgroup>` : '<option value="api:" disabled>API model (add one in Connections)</option>');
   }
+  function modelFields(s) {
+    const cfg = modelsCfg[s.kind] || { models: [], efforts: [], labels: {} };
+    const custom = s.customModel || (s.model && !cfg.models.includes(s.model));
+    const models = cfg.models.map(id => `<option value="${esc(id)}" ${!custom && s.model === id ? 'selected' : ''}>${esc(cfg.labels[id] || id)}</option>`).join('');
+    const efforts = cfg.efforts.map(id => `<option value="${esc(id)}" ${s.effort === id ? 'selected' : ''}>${esc(cfg.labels[id] || id)}</option>`).join('');
+    return `<div class="two">
+      <label class="field"><span>Model</span><select class="select" data-f="modelSel">
+        <option value="" ${!custom && !s.model ? 'selected' : ''}>Default${cfg.defaultLabel ? ' (' + esc(cfg.defaultLabel) + ')' : ''}</option>${models}
+        <option value="__custom" ${custom ? 'selected' : ''}>Other model ID</option></select></label>
+      <label class="field"><span>Effort</span><select class="select" data-f="effort"><option value="">Default</option>${efforts}</select></label></div>
+      ${s.role === 'Build' && s.kind !== 'codex' ? `<label class="switch" title="Lets this stage run terminal commands (tests, installs, builds) without asking. Off: it can only read and edit files."><input type="checkbox" data-f="commands" ${s.commands ? 'checked' : ''}>Can run commands, like tests</label>` : ''}
+      ${s.role === 'Build' && s.kind === 'codex' ? '<span class="role-hint">Codex runs commands inside its own sandbox.</span>' : ''}
+      ${custom ? `<input class="input mono" data-f="model" maxlength="150" value="${esc(s.model || '')}" placeholder="Exact model ID, like claude-opus-4-5" spellcheck="false">` : ''}`;
+  }
   function modelChoices(step) {
     if (step.kind === 'api') return [];
     return (modelsCfg[step.kind]?.models || []);
@@ -96,9 +116,10 @@
         <div class="role-hint">${ROLES[s.role]}</div>
         <label class="field"><span>Provider</span><select class="select" data-f="provider">${providerOptions(s)}</select>
           ${missing ? `<span class="warn">This CLI is not installed on this computer.</span>` : ''}${noConn ? `<span class="warn">Choose a saved API connection.</span>` : ''}</label>
-        <label class="field"><span>Model <em>${s.kind === 'api' ? 'blank uses the connection default' : 'blank uses the CLI default'}</em></span>
-          <input class="input mono" data-f="model" list="plModels${i}" maxlength="150" value="${esc(s.model || '')}" placeholder="${esc(s.kind === 'api' ? (conn?.model || 'default') : 'default')}" spellcheck="false">
-          <datalist id="plModels${i}">${modelChoices(s).map(m => `<option value="${esc(m)}"></option>`).join('')}</datalist></label>
+        ${s.kind === 'api'
+          ? `<label class="field"><span>Model <em>blank uses the connection default</em></span>
+              <input class="input mono" data-f="model" maxlength="150" value="${esc(s.model || '')}" placeholder="${esc(conn?.model || 'default')}" spellcheck="false"></label>`
+          : modelFields(s)}
         <label class="field"><span>Instructions <em>optional</em></span>
           <textarea class="textarea" data-f="instructions" maxlength="4000" rows="2" placeholder="Anything special for this stage">${esc(s.instructions || '')}</textarea></label>
       </article>`;
@@ -135,7 +156,14 @@
     if (!card) return;
     const step = draft.steps[Number(card.dataset.i)];
     if (e.target.dataset.f === 'role') step.role = e.target.value;
+    if (e.target.dataset.f === 'modelSel') {
+      step.customModel = e.target.value === '__custom';
+      step.model = step.customModel ? '' : e.target.value;
+    }
+    if (e.target.dataset.f === 'effort') step.effort = e.target.value;
+    if (e.target.dataset.f === 'commands') step.commands = e.target.checked;
     if (e.target.dataset.f === 'provider') {
+      step.effort = ''; step.customModel = false;
       const [kind, id] = e.target.value.split(':');
       step.kind = kind; step.model = '';
       if (kind === 'api') step.connectionId = id; else delete step.connectionId;
@@ -224,7 +252,7 @@
         const isHandoff = st === 'waiting' && i === outs.length - 1;
         const open = openAnswers.has(i) || isHandoff;
         return `<div class="step ${isHandoff ? 'waiting' : 'done'}" data-i="${i}">
-          ${head(`<span class="badge ok">${ICONS.check}</span>`, '', `${out.edited ? '<span class="tag edited">Edited</span>' : ''}<span class="tm">${fmtClock(out.ms || 0)}</span>
+          ${head(`<span class="badge ok">${ICONS.check}</span>`, '', `${window.vdRanTag(s, out.ranOn)}${out.edited ? '<span class="tag edited">Edited</span>' : ''}<span class="tm">${fmtClock(out.ms || 0)}</span>
             <button class="btn sm ghost" data-act="copy">${ICONS.copy}Copy</button>
             ${isHandoff ? '' : `<button class="btn sm ghost" data-act="toggle">${open ? 'Collapse' : 'Show answer'}</button>`}`)}
           ${isHandoff && editing

@@ -43,8 +43,8 @@
       <div class="steps">${(run.steps || []).map((s, i) => {
         const o = run.outputs[i];
         return `<div class="step ${o ? 'done' : ''}"><div class="step-h">${o ? `<span class="badge ok">${ICONS.check}</span>` : `<span class="badge q">${i + 1}</span>`}
-          <span class="step-t">${esc(s.role)}<b>${esc(kindName(s.kind))}${s.model ? ', ' + esc(s.model) : ''}</b></span><span class="grow"></span>
-          ${o?.edited ? '<span class="tag edited">Edited</span>' : ''}<span class="tm">${o ? fmtClock(o.ms || 0) : 'Not run'}</span>
+          <span class="step-t">${esc(s.role)}<b>${esc(kindName(s.kind))}, ${s.model ? esc((modelsCfg[s.kind]?.labels || {})[s.model] || s.model) : 'default model'}${s.effort ? ', ' + esc(s.effort) + ' effort' : ''}</b></span><span class="grow"></span>
+          ${o && window.vdRanTag ? window.vdRanTag(s, o.ranOn) : ''}${o?.edited ? '<span class="tag edited">Edited</span>' : ''}<span class="tm">${o ? fmtClock(o.ms || 0) : 'Not run'}</span>
           ${o ? `<button class="btn sm ghost" data-act="copy" data-i="${i}">${ICONS.copy}Copy</button>` : ''}</div>
           ${o ? `<div class="answer open">${window.vdMd ? window.vdMd(o.text) : esc(o.text)}</div>` : ''}</div>`;
       }).join('')}</div></div>`;
