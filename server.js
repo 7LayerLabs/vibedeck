@@ -240,13 +240,16 @@ function readRuns(){
   try {return fs.readFileSync(RUNS_FILE,'utf8').trim().split('\n').map(l=>{try{return JSON.parse(l);}catch{return null;}}).filter(Boolean).slice(-RUNS_MAX);}catch{return [];}
 }
 function saveRun(status){
-  const entry={id:status.id,ts:status.startedAt,finishedAt:Date.now(),name:status.name,request:status.request,cwd:status.cwd,state:status.state,error:status.state==='error'?status.text:'',
+  const entry={id:status.id,ts:status.startedAt,finishedAt:Date.now(),name:status.name,request:status.request,cwd:status.cwd,state:status.state,error:status.state==='error'?status.text:'',changes:status.changes||null,
     steps:status.steps,outputs:status.outputs.map(o=>({kind:o.kind,role:o.role,model:o.model,effort:o.effort,ranOn:o.ranOn,ms:o.ms,edited:!!o.edited,text:o.text.slice(0,64*1024)}))};
   const items=readRuns().filter(r=>r.id!==entry.id).slice(-(RUNS_MAX-1));items.push(entry);
   try {fs.writeFileSync(RUNS_FILE,items.map(r=>JSON.stringify(r)).join('\n')+'\n');} catch(e){slog(`runs write failed: ${e.message}`);}
   broadcastWs({type:'pipelineRunSaved',run:entry});
 }
 const API_TIMEOUT_MS=10*60000;
+// the project folder as it was when the current run started, to report what the run created or changed
+const filesLib=require('./lib/files');
+let runSnapshot=null;
 const customRunner=new PipelineRunner({
   resolveCommand:kind=>kindOf(kind)?.cmd||CLI(kind),
   execute:args=>{
@@ -256,6 +259,7 @@ const customRunner=new PipelineRunner({
   },
   emit:status=>{
     if(status.type==='activity')return broadcastWs({type:'pipelineActivity',id:status.id,index:status.index,activity:status.activity});
+    if(runSnapshot && status.cwd && ['waiting','done','cancelled','error'].includes(status.state)){try{status.changes=filesLib.diff(runSnapshot,status.cwd);}catch{}}
     customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
     if(status.state!==customRunner.lastSavedState && ['done','cancelled','error'].includes(status.state) && (status.outputs.length || status.state==='error')){saveRun(status);}
     customRunner.lastSavedState=status.state;
@@ -1060,6 +1064,20 @@ wss.on('connection', (ws) => {
       }catch(e){reply({type:'customPipelineError',text:e.message});}
       return;
     }
+    if(msg.type==='openPath'){
+      // show a file or folder in Explorer / Finder. Only paths inside the project folder, the folder
+      // the current run worked in, or a recent project folder are allowed.
+      const target=path.resolve(String(msg.base||state.cwd),String(msg.rel||''));
+      const inside=[state.cwd,customStatus?.cwd,...(state.recents||[])].filter(Boolean).some(root=>{const r=path.resolve(root);return (target+path.sep).toLowerCase().startsWith((r+path.sep).toLowerCase());});
+      if(!inside||!fs.existsSync(target))return notice('That file is not in the project folder anymore.');
+      const isFile=fs.statSync(target).isFile();
+      try {
+        const child=IS_WIN?spawn('explorer.exe',[isFile?`/select,${target}`:target],{detached:true,stdio:'ignore'})
+          :spawn('open',isFile?['-R',target]:[target],{detached:true,stdio:'ignore'});
+        child.on('error',()=>{});child.unref();
+      } catch {}
+      return;
+    }
     if(msg.type==='pickFolder'){
       pickFolder().then(dir=>reply({type:'folderPicked',dir:dir||''}));
       return;
@@ -1071,6 +1089,7 @@ wss.on('connection', (ws) => {
           if(lastRound?.pending?.size)throw Error('Wait for the current broadcast round to finish first.');
           const missing=(msg.definition?.steps||[]).find(step=>step.kind!=='api' && HEALTH.find(h=>h.id===step.kind) && !HEALTH.find(h=>h.id===step.kind).ok);
           if(missing)throw Error(`The ${missing.kind} CLI is not installed. Install it or pick another provider for that stage.`);
+          try { runSnapshot=filesLib.snapshot(state.cwd); } catch { runSnapshot=null; }
           customRunner.start(msg.definition,msg.prompt,state.cwd,{autoApprove:!!msg.autoApprove,handsFree:!!msg.handsFree});
         }
         else if(msg.type==='customPipelineResume')customRunner.resume({note:msg.note,editedOutput:msg.editedOutput});

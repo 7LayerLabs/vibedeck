@@ -91,6 +91,7 @@
     const api = apiConnections.map(c => `<option value="api:${esc(c.id)}" ${step.kind === 'api' && step.connectionId === c.id ? 'selected' : ''}>API: ${esc(c.name)}</option>`).join('');
     return cli + (api ? `<optgroup label="API and local models">${api}</optgroup>` : '<option value="api:" disabled>API model (add one in Connections)</option>');
   }
+  const handsFreeOn = () => !!document.getElementById('plAuto')?.checked;
   function modelFields(s) {
     const cfg = modelsCfg[s.kind] || { models: [], efforts: [], labels: {} };
     const custom = s.customModel || (s.model && !cfg.models.includes(s.model));
@@ -101,7 +102,7 @@
         <option value="" ${!custom && !s.model ? 'selected' : ''}>Default${cfg.defaultLabel ? ' (' + esc(cfg.defaultLabel) + ')' : ''}</option>${models}
         <option value="__custom" ${custom ? 'selected' : ''}>Other model ID</option></select></label>
       <label class="field"><span>Effort</span><select class="select" data-f="effort"><option value="">Default</option>${efforts}</select></label></div>
-      ${s.role === 'Build' && s.kind !== 'codex' ? `<label class="switch" title="Lets this stage run terminal commands (tests, installs, builds) without asking. Off: it can only read and edit files."><input type="checkbox" data-f="commands" ${s.commands ? 'checked' : ''}>Can run commands, like tests</label>` : ''}
+      ${s.role === 'Build' && s.kind !== 'codex' ? `<label class="switch" title="Lets this stage run terminal commands (tests, installs, builds) without asking. Off: it can only read and edit files."><input type="checkbox" data-f="commands" ${s.commands || handsFreeOn() ? 'checked' : ''} ${handsFreeOn() ? 'disabled' : ''}>Can run commands, like tests${handsFreeOn() ? ' (on: Hands-free)' : ''}</label>` : ''}
       ${s.role === 'Build' && s.kind === 'codex' ? '<span class="role-hint">Codex runs commands inside its own sandbox.</span>' : ''}
       ${custom ? `<input class="input mono" data-f="model" maxlength="150" value="${esc(s.model || '')}" placeholder="Exact model ID, like claude-opus-4-5" spellcheck="false">` : ''}`;
   }
@@ -235,7 +236,22 @@
   $('plPrompt').addEventListener('keydown', e => { if (e.key === 'Enter' && e.ctrlKey) $('plRun').click(); });
   // Hands-free is remembered between sessions
   $('plAuto').checked = load('vibedeck-handsfree') === '1';
-  $('plAuto').addEventListener('change', () => store('vibedeck-handsfree', $('plAuto').checked ? '1' : '0'));
+  $('plAuto').addEventListener('change', () => { store('vibedeck-handsfree', $('plAuto').checked ? '1' : '0'); renderFlow(); });
+
+  // Where the run worked and what it created or changed there, with buttons to open them.
+  function filesHtml(cwd, ch) {
+    if (!cwd) return '';
+    const list = ch ? [...ch.created.map(f => ['Created', f]), ...ch.changed.map(f => ['Changed', f]), ...ch.deleted.map(f => ['Deleted', f])] : [];
+    const rows = !ch ? '' : list.length
+      ? `<div class="rf-list">${list.map(([k, f]) => `<div class="rf-item"><span class="rf-kind ${k.toLowerCase()}">${k}</span><code title="${esc(f)}">${esc(f)}</code>${k !== 'Deleted' ? `<button class="btn sm ghost" data-open="${esc(f)}" data-base="${esc(cwd)}">Open</button>` : ''}</div>`).join('')}</div>`
+      : '<div class="rf-none">No files were created or changed.</div>';
+    return `<div class="run-files"><div class="rf-where">${ICONS.folder}<span>Working folder</span><code title="${esc(cwd)}">${esc(cwd)}</code><button class="btn sm" data-open="" data-base="${esc(cwd)}">Open folder</button></div>${rows}</div>`;
+  }
+  window.vdFilesHtml = filesHtml;
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button[data-open]');
+    if (b) send({ type: 'openPath', base: b.dataset.base, rel: b.dataset.open });
+  });
 
   // ---------- run panel ----------
   const since = ts => `data-since="${ts || 0}"`;
@@ -307,7 +323,7 @@
       return `<div class="step" data-i="${i}">${head(`<span class="badge q">${i + 1}</span>`, '', `<span class="tm">${waitText}</span>`)}</div>`;
     }).join('');
     const total = st === 'done' || st === 'cancelled' || st === 'error' ? '' : `<span class="elapsed">${ICONS.clock}<span ${since(status.startedAt)}>${fmtClock(Date.now() - (status.startedAt || Date.now()))}</span></span>`;
-    box.innerHTML = `<div class="run-head"><div class="t"><div class="eyebrow">${active() ? 'Live run' : 'Last run'}: ${esc(status.name)}${status.handsFree ? ' · Hands-free' : ''}</div><h3 title="${esc(status.request)}">${esc(first)}</h3></div>${total}${headBtns}</div>${banner}<div class="steps">${rows}</div>`;
+    box.innerHTML = `<div class="run-head"><div class="t"><div class="eyebrow">${active() ? 'Live run' : 'Last run'}: ${esc(status.name)}${status.handsFree ? ' · Hands-free' : ''}</div><h3 title="${esc(status.request)}">${esc(first)}</h3></div>${total}${headBtns}</div>${banner}${filesHtml(status.cwd, status.changes)}<div class="steps">${rows}</div>`;
     const log = $('runLog');
     if (log) log.scrollTop = log.scrollHeight;
   }

@@ -40,6 +40,7 @@
       <div><div class="eyebrow">${esc(run.name)}, ${esc(fmtWhen(run.ts))}${dur ? ', took ' + dur : ''}</div>
         <div class="card req" style="margin-top:6px">${esc(run.request)}</div></div>
       ${run.error ? `<div class="run-banner bad">${ICONS.warn}<span>${esc(run.error)}</span></div>` : ''}
+      ${window.vdFilesHtml ? window.vdFilesHtml(run.cwd, run.changes) : ''}
       <div class="steps">${(run.steps || []).map((s, i) => {
         const o = run.outputs[i];
         return `<div class="step ${o ? 'done' : ''}"><div class="step-h">${o ? `<span class="badge ok">${ICONS.check}</span>` : `<span class="badge q">${i + 1}</span>`}
