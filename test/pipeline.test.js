@@ -84,3 +84,12 @@ test('stages record the model the CLI reports, and effort reaches the CLI flags'
   assert.equal(codexSessionModel('0123456789abcdef',home),'gpt-6-sol');assert.equal(codexSessionModel('missing-thread-id',home),'');
   fs.rmSync(home,{recursive:true,force:true});
 });
+test('hands-free runs every stage without stopping and lets Claude and Grok Build stages run commands',async()=>{
+  const calls=[];const events=[];
+  const runner=new PipelineRunner({emit:e=>events.push(e),execute:args=>{calls.push(args.step);return {promise:Promise.resolve({text:'ok',model:''}),cancel(){}};}});
+  runner.start({name:'HF',steps:[{kind:'codex',role:'Plan'},{kind:'claude',role:'Build'},{kind:'grok',role:'Build'},{kind:'codex',role:'Build'},{kind:'grok',role:'Review'}]},'x','cwd',{handsFree:true});
+  for(let i=0;i<6;i++)await tick();
+  assert.equal(statuses(events).some(e=>e.state==='waiting'),false);
+  assert.equal(statuses(events).at(-1).state,'done');assert.equal(statuses(events).at(-1).handsFree,true);
+  assert.deepEqual(calls.map(s=>!!s.commands),[false,true,true,false,false]);
+});

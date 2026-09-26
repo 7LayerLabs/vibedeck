@@ -52,6 +52,7 @@
       return `<div class="card prov-card" style="--kind:${color(k)}">
         <div class="top"><span class="pdot ${h.ok ? '' : 'off'}"></span><span class="nm">${kindName(k)}</span><span class="ver">${h.ok ? (h.version ? 'v' + esc(h.version) : 'Installed') : 'Not installed'}</span></div>
         <p>${esc(BLURB[k])}</p>
+        ${h.ok ? `<div class="meters" style="--kind:${color(k)}">${window.vdUsageHtml ? window.vdUsageHtml(k, true) : ''}</div>` : ''}
         ${h.ok
           ? `<div class="row"><button class="btn sm" data-signin="${k}">${ICONS.key}Sign in</button><button class="btn sm ghost" data-open="${k}">${ICONS.terminal}Open a terminal</button></div>`
           : `<p>Install it, then restart VibeDeck:</p><code>${esc(INSTALL[k])}</code>`}
@@ -120,6 +121,7 @@
     }
   });
 
+  window.addEventListener('vd:usage', () => renderProviders());
   ws.addEventListener('message', ev => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'init') { items = msg.connections || []; secureKeys = !!msg.secureKeyStorage; health = msg.health || []; renderProviders(); renderList(); resetForm(); }

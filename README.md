@@ -53,6 +53,14 @@ Model and effort add `--model` / `-m` and `--effort`, `--reasoning-effort` or `-
 
 Prompts go through stdin or a private temp file, never a shell. API stages receive only the prompt and earlier outputs; they return text and never touch files. Plan and Review time out after 15 minutes, Build after 30.
 
+## Usage meters
+
+The sidebar shows a bar under each AI, and Connections shows every limit window with its reset time. The numbers come from the CLIs themselves: Claude from its own `/usage` report (a local command, no model call), Codex from the rate limits it records in its session logs, Grok from the usage files it writes per session. Grok reports no plan limit, so its bar compares today with the busiest day of the last week. Bars turn amber at 60% and red at 85%.
+
+## Hands-free runs
+
+The Hands-free switch on the Request box runs every pipeline stage straight through without stopping for approval, and lets Claude and Grok Build stages run commands (tests, installs, builds) without being blocked. Plan and Review stages stay read-only.
+
 ## History
 
 Three tabs: pipeline runs (open one to read every stage, copy it, or run it again), broadcast rounds (reopen any round in Compare), and prompts.

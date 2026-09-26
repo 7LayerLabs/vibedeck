@@ -140,6 +140,33 @@ function readVersions() {
   }
 }
 setTimeout(readVersions, 1500);
+
+// ---------- plan usage meters (lib/limits.js): what each CLI reports about its own limits ----------
+const limitsLib = require('./lib/limits');
+const usage = { claude: null, codex: null, grok: null, checkedAt: {} };
+let claudeUsageBusy = false, claudeUsageAt = 0;
+function refreshClaudeUsage() {
+  if (claudeUsageBusy || !HEALTH.find(h => h.id === 'claude')?.ok) return;
+  claudeUsageBusy = true; claudeUsageAt = Date.now();
+  limitsLib.claudeUsage({ command: kindOf('claude').cmd, env: childEnv() }).then(r => {
+    claudeUsageBusy = false;
+    if (r) { usage.claude = r; usage.checkedAt.claude = Date.now(); broadcastWs({ type: 'usage', usage }); }
+  });
+}
+function refreshLocalUsage() {
+  try { usage.codex = HEALTH.find(h => h.id === 'codex')?.ok ? limitsLib.codexUsage() : null; usage.checkedAt.codex = Date.now(); } catch {}
+  try { usage.grok = HEALTH.find(h => h.id === 'grok')?.ok ? limitsLib.grokUsage() : null; usage.checkedAt.grok = Date.now(); } catch {}
+  broadcastWs({ type: 'usage', usage });
+}
+// after a round or pipeline run finishes, refresh soon (Claude at most once a minute)
+function usageChanged() {
+  setTimeout(refreshLocalUsage, 3000);
+  if (Date.now() - claudeUsageAt > 60000) setTimeout(refreshClaudeUsage, 5000);
+}
+setTimeout(refreshLocalUsage, 3000);
+setTimeout(refreshClaudeUsage, 4000);
+setInterval(refreshLocalUsage, 60000);
+setInterval(refreshClaudeUsage, 5 * 60000);
 // Grok lists its models headlessly, so its list and default stay current without any clicks
 setTimeout(async () => {
   if (!HEALTH.find(h => h.id === 'grok')?.ok) return;
@@ -232,6 +259,7 @@ const customRunner=new PipelineRunner({
     customStatus=status;broadcastWs({type:'customPipelineStatus',...status});
     if(status.state!==customRunner.lastSavedState && ['done','cancelled','error'].includes(status.state) && (status.outputs.length || status.state==='error')){saveRun(status);}
     customRunner.lastSavedState=status.state;
+    if(['done','cancelled','error'].includes(status.state))usageChanged();
     if(['done','cancelled','error'].includes(status.state))slog(`pipeline ${status.name}: ${status.state}${status.text?' '+status.text:''}`);
   },
 });
@@ -922,6 +950,7 @@ setInterval(() => {
     appendRound(entry);
     broadcastWs({ type: 'roundSaved', round: entry });
     broadcastWs({ type: r.failed?'roundFailed':'roundDone', ts: r.ts, count: r.targets.length });
+    usageChanged();
   }
 }, 1000);
 
@@ -968,6 +997,7 @@ wss.on('connection', (ws) => {
     recents: state.recents,
     history: readHistory(),
     health: HEALTH,
+    usage,
     judges: JUDGE_KINDS,
     rounds: readRounds(50),
     round: lastRound?.pending?.size ? { ts: lastRound.ts, targets: [...lastRound.pending.keys()] } : null,
@@ -1041,7 +1071,7 @@ wss.on('connection', (ws) => {
           if(lastRound?.pending?.size)throw Error('Wait for the current broadcast round to finish first.');
           const missing=(msg.definition?.steps||[]).find(step=>step.kind!=='api' && HEALTH.find(h=>h.id===step.kind) && !HEALTH.find(h=>h.id===step.kind).ok);
           if(missing)throw Error(`The ${missing.kind} CLI is not installed. Install it or pick another provider for that stage.`);
-          customRunner.start(msg.definition,msg.prompt,state.cwd,{autoApprove:!!msg.autoApprove});
+          customRunner.start(msg.definition,msg.prompt,state.cwd,{autoApprove:!!msg.autoApprove,handsFree:!!msg.handsFree});
         }
         else if(msg.type==='customPipelineResume')customRunner.resume({note:msg.note,editedOutput:msg.editedOutput});
         else if(msg.type==='customPipelineRetry')customRunner.retry({note:msg.note});

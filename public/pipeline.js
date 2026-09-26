@@ -61,7 +61,7 @@
         </div>
         <div class="side">
           <div class="where" id="plWhere"></div>
-          <label class="switch" title="Run every stage back to back without stopping for your review"><input type="checkbox" id="plAuto">Auto-approve handoffs</label>
+          <label class="switch" title="Hands-free: every stage runs straight through without stopping for your approval, and Build stages can run commands (tests, installs, builds) without being blocked. Plan and Review stay read-only."><input type="checkbox" id="plAuto">Hands-free</label>
           <button class="btn primary" id="plRun">${ICONS.play}Run pipeline</button>
         </div>
       </div>
@@ -230,9 +230,12 @@
     if (!prompt.trim()) { toast('Write what the pipeline should do first.', 'info'); return $('plPrompt').focus(); }
     if (needsFolder && draft.steps.some(s => s.kind !== 'api')) { toast('Choose a project folder first. CLI stages work inside it.', 'folder'); return $('cwdBtn').click(); }
     openAnswers = new Set(); editing = false;
-    send({ type: 'customPipelineStart', definition: cleanDef(), prompt, autoApprove: $('plAuto').checked });
+    send({ type: 'customPipelineStart', definition: cleanDef(), prompt, autoApprove: $('plAuto').checked, handsFree: $('plAuto').checked });
   });
   $('plPrompt').addEventListener('keydown', e => { if (e.key === 'Enter' && e.ctrlKey) $('plRun').click(); });
+  // Hands-free is remembered between sessions
+  $('plAuto').checked = load('vibedeck-handsfree') === '1';
+  $('plAuto').addEventListener('change', () => store('vibedeck-handsfree', $('plAuto').checked ? '1' : '0'));
 
   // ---------- run panel ----------
   const since = ts => `data-since="${ts || 0}"`;
@@ -304,7 +307,7 @@
       return `<div class="step" data-i="${i}">${head(`<span class="badge q">${i + 1}</span>`, '', `<span class="tm">${waitText}</span>`)}</div>`;
     }).join('');
     const total = st === 'done' || st === 'cancelled' || st === 'error' ? '' : `<span class="elapsed">${ICONS.clock}<span ${since(status.startedAt)}>${fmtClock(Date.now() - (status.startedAt || Date.now()))}</span></span>`;
-    box.innerHTML = `<div class="run-head"><div class="t"><div class="eyebrow">${active() ? 'Live run' : 'Last run'}: ${esc(status.name)}</div><h3 title="${esc(status.request)}">${esc(first)}</h3></div>${total}${headBtns}</div>${banner}<div class="steps">${rows}</div>`;
+    box.innerHTML = `<div class="run-head"><div class="t"><div class="eyebrow">${active() ? 'Live run' : 'Last run'}: ${esc(status.name)}${status.handsFree ? ' · Hands-free' : ''}</div><h3 title="${esc(status.request)}">${esc(first)}</h3></div>${total}${headBtns}</div>${banner}<div class="steps">${rows}</div>`;
     const log = $('runLog');
     if (log) log.scrollTop = log.scrollHeight;
   }
