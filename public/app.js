@@ -13,9 +13,15 @@ function ranLabel(kind, id) {
   const labels = modelsCfg[kind]?.labels || {};
   return labels[id] || (kind === 'grok' && id.endsWith('-build') && labels[id.slice(0, -6)]) || id;
 }
+// ran = the model the CLI's own log says answered last; a default pane shows it once known
 function chipText(p) {
-  const model = p.model ? modelLabel(p.kind, p.model) : 'Default model';
+  const model = p.model ? modelLabel(p.kind, p.model) : p.ran ? `Default (${ranLabel(p.kind, p.ran)})` : 'Default model';
   return p.effort ? `${model} · ${modelLabel(p.kind, p.effort)}` : model;
+}
+function chipTitle(p) {
+  if (p.mismatch) return `Launched with ${modelLabel(p.kind, p.model)}, but ${kindName(p.kind)}'s own log says the last answer came from ${ranLabel(p.kind, p.ran)}. The CLI switched models by itself. Pick a model here to relaunch it.`;
+  const verified = p.ran ? ` Last answer verified from ${kindName(p.kind)}'s log: ${ranLabel(p.kind, p.ran)}.` : '';
+  return `Model and effort: ${chipText(p)}.${verified} Click to change.`;
 }
 const THEME = {
   background: '#0e1118', foreground: '#d4d9e3', cursor: '#ffd400', cursorAccent: '#0e1118',
@@ -162,7 +168,7 @@ function buildPane(info) {
     </div>`;
   panesEl.appendChild(el);
 
-  const pane = { el, id: info.id, kind: info.kind, label: info.label, dead: false, broadcast: !isNotes, busySince: 0, model: info.model || '', effort: info.effort || '' };
+  const pane = { el, id: info.id, kind: info.kind, label: info.label, dead: false, broadcast: !isNotes, busySince: 0, ran: info.ran || '', mismatch: !!info.mismatch, model: info.model || '', effort: info.effort || '' };
   const bcBtn = el.querySelector('.bcast');
   const setBroadcast = on => {
     pane.broadcast = on;
@@ -230,7 +236,12 @@ function buildPane(info) {
   if (AI_KINDS.includes(info.kind) && !info.signIn) {
     const chip = el.querySelector('.modelchip');
     chip.hidden = false;
-    pane.updateChip = () => { chip.querySelector('span').textContent = chipText(pane); chip.title = `Model and effort: ${chipText(pane)}. Click to change.`; };
+    pane.updateChip = () => {
+      chip.querySelector('span').textContent = pane.mismatch ? `Running ${ranLabel(pane.kind, pane.ran)}, not ${modelLabel(pane.kind, pane.model)}` : chipText(pane);
+      chip.classList.toggle('mismatch', !!pane.mismatch);
+      chip.classList.toggle('verified', !!pane.ran && !pane.mismatch);
+      chip.title = chipTitle(pane);
+    };
     pane.updateChip();
     chip.addEventListener('click', e => { e.stopPropagation(); openModelMenu(pane, chip); });
   }
@@ -507,9 +518,16 @@ ws.addEventListener('message', ev => {
   } else if (msg.type === 'exit') {
     const p = panes.get(msg.pane);
     if (p) { p.dead = true; p.busySince = 0; p.el.classList.add('dead'); p.el.classList.remove('gated'); renderTargets(); }
+  } else if (msg.type === 'paneRan') {
+    const p = panes.get(msg.pane);
+    if (p) {
+      const was = p.mismatch;
+      p.ran = msg.ran; p.mismatch = msg.mismatch; p.updateChip?.();
+      if (msg.mismatch && !was) toast(`${paneTitle(p)} is running ${ranLabel(p.kind, msg.ran)}, not ${modelLabel(p.kind, p.model)}. The CLI switched by itself. Pick the model again on its chip to relaunch it.`, 'warn', true);
+    }
   } else if (msg.type === 'restarted') {
     const p = panes.get(msg.pane);
-    if (p && msg.info) { p.model = msg.info.model; p.effort = msg.info.effort; p.updateChip?.(); }
+    if (p && msg.info) { p.model = msg.info.model; p.effort = msg.info.effort; p.ran = msg.info.ran; p.mismatch = msg.info.mismatch; p.updateChip?.(); }
     if (p && msg.resumed !== undefined) toast(msg.resumed ? `${paneTitle(p)} restarted on ${chipText(p)} and picked up the same conversation.` : `${paneTitle(p)} restarted on ${chipText(p)}.`, 'restart');
     if (p && p.term) {
       p.dead = false; p.busySince = 0;

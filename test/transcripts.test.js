@@ -115,3 +115,21 @@ test('codex: an aborted turn is done',t=>{
   const r=readAnswer({kind:'codex',cwd,prompt:PROMPT,sinceTs:now,home});
   assert.equal(r.done,true);
 });
+
+test('a log whose modified time never changes (Codex keeps it open on Windows) is still found as it grows',t=>{
+  const {primeLogs}=require('../lib/transcripts');
+  const home=fakeHome(t),now=Date.now(),d=new Date();
+  const dir=path.join(home,'.codex','sessions',String(d.getFullYear()),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0'));fs.mkdirSync(dir,{recursive:true});
+  const file=path.join(dir,'rollout-open.jsonl');
+  fs.writeFileSync(file,jsonl([{timestamp:iso(now-600000),type:'session_meta',payload:{cwd}}]));
+  const frozen=new Date(now-600000);fs.utimesSync(file,frozen,frozen);
+  primeLogs('codex',cwd,home); // round starts: sizes recorded
+  fs.appendFileSync(file,jsonl([
+    {timestamp:iso(now+100),type:'turn_context',payload:{model:'gpt-6-sol'}},
+    {timestamp:iso(now+200),type:'response_item',payload:{type:'message',role:'user',content:[{text:PROMPT}]}},
+    {timestamp:iso(now+900),type:'response_item',payload:{type:'message',role:'assistant',content:[{text:'51'}]}},
+    {timestamp:iso(now+950),type:'event_msg',payload:{type:'task_complete',last_agent_message:'51'}}]));
+  fs.utimesSync(file,frozen,frozen); // Windows leaves the modified time alone
+  const r=readAnswer({kind:'codex',cwd,prompt:PROMPT,sinceTs:now,home});
+  assert.ok(r,'found despite the frozen modified time');assert.equal(r.text,'51');assert.equal(r.model,'gpt-6-sol');
+});

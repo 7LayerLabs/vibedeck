@@ -57,6 +57,26 @@ const DEFAULT_ACTIVE = ['claude', 'codex', 'grok'];
 // Matched on the dialogs' own option lines so ordinary conversation text can't trigger it.
 // Claude: "Quick safety check ... Yes, I trust this folder"; Codex: "1. Trust and continue".
 const TRUST_DIALOG = /Quick\s*safety\s*check|Yes,\s*I\s*trust\s*this\s*folder|Trust\s*and\s*continue/i;
+// Any numbered choice menu with a highlighted option ("› 1. Update now", "❯ 2. Opus 5.5") means the
+// CLI is asking the user something (update, new-model offer, model picker). Typed prompts and Enter
+// presses would answer it, so nothing is sent to a pane while one is on screen.
+// Claude and Codex also echo the user's own sent prompts with the same pointer ("❯ 1. Fix the header"),
+// so a line that is just the start of a recent prompt is not a menu.
+const MENU_LINE = /^\s*[›❯>]\s*(\d+\.\s+\S.*)$/;
+let recentPromptCache = { at: 0, items: [] };
+function menuOpen(text) {
+  if (!text.includes('.')) return false;
+  if (Date.now() - recentPromptCache.at > 3000) recentPromptCache = { at: Date.now(), items: readHistory(20).map(h => h.text) };
+  const recent = [lastRound?.prompt, ...recentPromptCache.items].filter(Boolean).map(p => p.replace(/\s+/g, ' ').trim());
+  return text.split('\n').some(line => {
+    const m = line.match(MENU_LINE);
+    if (!m) return false;
+    const option = m[1].replace(/\s+/g, ' ').trim();
+    return !recent.some(p => p.startsWith(option.slice(0, 40)) || option.startsWith(p.slice(0, 40)));
+  });
+}
+const MENU_OPEN = { test: menuOpen };
+const questionOnScreen = s => { const t = screenText(s); return TRUST_DIALOG.test(t) || menuOpen(t); };
 const MAX_PANES = 5;
 const BUFFER_MAX = 400 * 1024;
 const ROUND_MAX = 200 * 1024;
@@ -411,7 +431,7 @@ function isReady(s) {
   if (!s.alive || s.buffer.length < 50 || Date.now() - s.lastDataTs < 1200) return false;
   const tail = stripAnsi(s.buffer.slice(-4000));
   // a pane showing any waiting screen must not get typed prompts: they would answer the question
-  if (s.waiting || TRUST_DIALOG.test(screenText(s))) return false;
+  if (s.waiting || questionOnScreen(s)) return false;
   const pat = kindOf(s.kind).ready;
   return !pat || pat.test(tail);
 }
@@ -429,7 +449,7 @@ function writePrompt(s, text) {
 setInterval(() => {
   for (const s of sessions.values()) {
     if (!s.queue.length || !s.alive) { if (!s.alive) s.queue = []; continue; }
-    const dialogUp = !!s.waiting || TRUST_DIALOG.test(screenText(s));
+    const dialogUp = !!s.waiting || questionOnScreen(s);
     if (isReady(s) || (!dialogUp && Date.now() - s.queue[0].ts > 30000)) {
       const item = s.queue.shift();
       if (s.inRound) s.roundOut = ''; // round starts when the prompt actually lands
@@ -450,6 +470,10 @@ const WAITING = [
     reason: 'Pick "Update now" or "Skip" in the pane with the arrow keys, then press Enter.' },
   { kinds: ['claude', 'codex', 'grok'], test: t => /Select\s*login\s*method|Sign\s*in\s*with\s*ChatGPT|Please\s*run\s*\/login/i.test(t), title: 'Sign-in needed',
     reason: 'This CLI is not signed in. Follow the sign-in steps in the pane, or use Connections to start the provider login.' },
+  // any other open choice menu: an update or new-model offer, a permission question mid-answer.
+  // always: checked even while the pane is answering, since that is when permission questions appear
+  { kinds: ['claude', 'codex', 'grok'], always: true, test: t => MENU_OPEN.test(t), title: 'Waiting for your answer',
+    reason: 'This CLI is asking you something (for example permission to run a command, an update, or a new model). Read it in the pane and pick an answer with the arrow keys and Enter. VibeDeck never answers these for you.' },
 ];
 setInterval(() => {
   for (const [id, s] of sessions) {
@@ -458,7 +482,7 @@ setInterval(() => {
     // skipping it keeps words like "sign in" inside an answer from gating the pane
     const answering = lastRound?.pending?.has(id) && !s.queue.length;
     const tail = screenText(s);
-    const hit = answering ? null : WAITING.find(w => w.kinds.includes(s.kind) && w.test(tail));
+    const hit = WAITING.find(w => w.kinds.includes(s.kind) && (!answering || w.always) && w.test(tail));
     const key = hit ? hit.title : null;
     if (key !== (s.waiting || null)) {
       s.waiting = key;
@@ -475,7 +499,8 @@ function reorderSessions(order) {
 
 const paneInfo = id => {
   const s = sessions.get(id);
-  return { id, kind: s.kind, label: kindOf(s.kind).label, model: s.model || '', effort: s.effort || '', signIn: !!s.signIn };
+  return { id, kind: s.kind, label: kindOf(s.kind).label, model: s.model || '', effort: s.effort || '', signIn: !!s.signIn,
+    ran: s.ranModel || '', mismatch: !!(s.model && s.ranModel && !sameModel(s.model, s.ranModel)) };
 };
 
 function readHistory(n = 100) {
@@ -618,7 +643,7 @@ async function updateModels() {
 }
 
 // ---------- answers: read from each CLI's own log, terminal scraping as the fallback ----------
-const { readAnswer, logPathFor } = require('./lib/transcripts');
+const { readAnswer, logPathFor, primeLogs } = require('./lib/transcripts');
 // log files already matched to other live Codex panes (two panes = two sessions)
 function claimedLogs(id, kind) {
   return [...sessions.entries()].filter(([oid, o]) => oid !== id && o.kind === kind && o.transcriptFile).map(([, o]) => o.transcriptFile);
@@ -638,6 +663,18 @@ function transcriptAnswer(id, prompt, sinceTs) {
     return found;
   } catch (e) { slog(`transcript read failed for ${id}: ${e.message}`); return null; }
 }
+// After every answer: the model the CLI's own log says it used, checked against the model the pane
+// was launched with. A CLI that switched models by itself (a new-model offer, a /model typed in the
+// pane) shows up as a mismatch on the pane's chip instead of hiding. Grok logs "grok-4.6-build" for
+// Grok 4.6, and Claude may add a date suffix, so "same model plus a suffix" counts as a match.
+const sameModel = (want, ran) => ran === want || ran.startsWith(want + '-');
+function reportRanModel(id, s, ran) {
+  s.ranModel = ran;
+  const mismatch = !!s.model && !sameModel(s.model, ran);
+  if (mismatch) slog(`model mismatch on ${id}: launched with ${s.model}, CLI log says ${ran}`);
+  broadcastWs({ type: 'paneRan', pane: id, ran, mismatch });
+}
+
 // What "-> notes", "-> sidecar" and relay send: the pane's latest answer, even if you kept
 // chatting in the pane after the last broadcast.
 function paneAnswer(id) {
@@ -842,7 +879,7 @@ setInterval(() => {
       // A CLI logs a prompt the moment it is submitted. Typed but still unlogged 4s later means the
       // Enter was swallowed (Codex treats a fast burst of typing as a paste), so press it again.
       if (!st.log && ['claude', 'codex', 'grok'].includes(s.kind) && s.promptWrittenAt && Date.now() - s.promptWrittenAt > 4000
-          && (st.enterRetries || 0) < 2 && screenText(s).replace(/\s+/g, ' ').includes(r.prompt.replace(/\s+/g, ' ').trim().slice(0, 24))) {
+          && (st.enterRetries || 0) < 2 && !questionOnScreen(s) && screenText(s).replace(/\s+/g, ' ').includes(r.prompt.replace(/\s+/g, ' ').trim().slice(0, 24))) {
         st.enterRetries = (st.enterRetries || 0) + 1;
         s.promptWrittenAt = Date.now();
         slog(`re-pressed Enter for ${id}: its prompt was typed but not submitted`);
@@ -854,6 +891,7 @@ setInterval(() => {
         const stalled = Date.now() - (st.logChangedAt || Date.now()) > 90000 && Date.now() - s.lastDataTs > 30000;
         if (!(st.log.done || stalled)) continue;
         if (st.log.text) (r.answers ||= {})[id] = st.log;
+        if (st.log.model) reportRanModel(id, s, st.log.model);
       }
       // fallback: an all-numeric answer ("2 + 2 = 4.") cleans to nothing, so
       // settledAnswer can't see it — but output happened and the pane went
@@ -1043,6 +1081,8 @@ wss.on('connection', (ws) => {
                     pending: new Map(targets.map(id => [id, { lastCleanLen: 0, stableSince: 0, session: sessions.get(id) }])) };
       // noHist: promoted mega-prompts skip ↑/↓ history (rounds.jsonl still records them)
       if (!msg.noHist) appendHistory(lastRound.ts, msg.data);
+      // note every log file's size now, so any growth during this round is seen (see lib/transcripts.js)
+      for (const k of new Set(targets.map(id => sessions.get(id).kind))) { try { primeLogs(k, state.cwd); } catch {} }
       for (const id of targets) {
         const t = sessions.get(id);
         t.roundOut = '';

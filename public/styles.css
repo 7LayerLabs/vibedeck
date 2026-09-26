@@ -447,3 +447,7 @@ main{display:flex;flex-direction:column;min-width:0;min-height:0}
 .cmp-col .col-head{flex-wrap:wrap;row-gap:6px}
 /* narrow stage cards stack model over effort */
 @container (max-width:290px){.stage .two{grid-template-columns:1fr}}
+/* chip states: verified by the CLI log, or a model mismatch */
+.modelchip.verified{border-color:rgba(74,222,128,.35)}
+.modelchip.mismatch{border-color:rgba(240,98,90,.6);color:#ffb3ad;background:var(--bad-soft)}
+.modelchip.mismatch svg.i{color:var(--bad)}
