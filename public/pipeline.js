@@ -43,29 +43,43 @@
   window.vdMd = md;
 
   // ---------- page skeleton ----------
+  // Ready-made test requests: small, single-file builds a Review stage can actually check.
+  const EXAMPLES = [
+    ['Specials margin calculator', 'Build specials.html, a single page for pricing restaurant specials: I enter each ingredient and its cost, plus the menu price, and it shows the plate cost, the food cost percentage and the profit per plate. Flag anything over 32% food cost in red. One file, no frameworks.'],
+    ['MNQ opening range planner', 'Build orb.html, a single page for MNQ opening range breakout trades: I enter the opening range high and low, and it shows the long and short entries at the range edges, stops at the opposite edge, 1R and 2R targets, and the dollar risk for 1 contract at $2 per point. One file, no frameworks.'],
+    ['Parlay payout calculator', 'Build parlay.html, a single page where I enter American odds for up to 6 legs and a stake. Show the combined decimal and American odds, the payout, the profit, and the implied win probability. One file, no frameworks.'],
+  ];
+
+  // Page order follows the work: what you want, then how it runs, then what came back.
   root.innerHTML = `
-    <div class="pl-top">
-      <div class="title">
-        <div class="eyebrow">Pipeline</div>
-        <input class="pl-name" id="plName" maxlength="80" spellcheck="false" aria-label="Pipeline name">
+    <section class="pl-section">
+      <div class="sec-h"><span class="sec-num">1</span><h3>Request</h3><span class="sec-sub">What should the AIs do?</span></div>
+      <div class="card request">
+        <div class="rq">
+          <textarea id="plPrompt" rows="3" maxlength="32000" placeholder="Describe the feature, fix or question. Every stage sees this plus the earlier stages' answers."></textarea>
+          <div class="examples"><span>Try one:</span>${EXAMPLES.map(([label], i) => `<button class="example" data-example="${i}">${esc(label)}</button>`).join('')}</div>
+        </div>
+        <div class="side">
+          <div class="where" id="plWhere"></div>
+          <label class="switch" title="Run every stage back to back without stopping for your review"><input type="checkbox" id="plAuto">Auto-approve handoffs</label>
+          <button class="btn primary" id="plRun">${ICONS.play}Run pipeline</button>
+        </div>
       </div>
-      <select class="select" id="plLoad" title="Load a saved or starter pipeline"></select>
-      <button class="btn" id="plSave">${ICONS.save}Save</button>
-      <button class="btn ghost" id="plDelete" title="Delete this saved pipeline">${ICONS.trash}</button>
-    </div>
-    <div class="flow" id="plFlow"></div>
-    <div class="card request">
-      <div class="rq">
-        <div class="eyebrow">Request</div>
-        <textarea id="plPrompt" rows="2" maxlength="32000" placeholder="Describe the feature, fix or question. Every stage sees this plus the earlier stages' answers."></textarea>
+    </section>
+    <section class="pl-section">
+      <div class="sec-h"><span class="sec-num">2</span><h3>Pipeline</h3>
+        <input class="pl-name" id="plName" maxlength="80" spellcheck="false" aria-label="Pipeline name" title="Pipeline name. Click to rename.">
+        <span class="grow"></span>
+        <select class="select" id="plLoad" title="Load a saved or starter pipeline"></select>
+        <button class="btn" id="plSave">${ICONS.save}Save</button>
+        <button class="btn ghost" id="plDelete" title="Delete this saved pipeline">${ICONS.trash}</button>
       </div>
-      <div class="side">
-        <div class="where" id="plWhere"></div>
-        <label class="switch" title="Run every stage back to back without stopping for your review"><input type="checkbox" id="plAuto">Auto-approve handoffs</label>
-        <button class="btn primary" id="plRun">${ICONS.play}Run pipeline</button>
-      </div>
-    </div>
-    <div class="card runp" id="plRun2" hidden></div>
+      <div class="flow" id="plFlow"></div>
+    </section>
+    <section class="pl-section" id="plResults" hidden>
+      <div class="sec-h"><span class="sec-num">3</span><h3>Results</h3></div>
+      <div class="card runp" id="plRun2"></div>
+    </section>
     <details class="more"><summary>How pipelines work</summary>
       <p>Each stage runs its CLI on its own in your project folder, one after another. Plan and Review stages can read files but not change them. Build stages can edit files, using the CLI's own permission rules. API and local-model stages only see the text you send them and cannot touch files. After each stage you see its answer and decide whether to continue, add a note, edit what gets handed on, or redo the stage.</p>
     </details>`;
@@ -173,6 +187,13 @@
   root.addEventListener('click', e => {
     const b = e.target.closest('button');
     if (!b) return;
+    if (b.dataset.example !== undefined) {
+      const ex = EXAMPLES[Number(b.dataset.example)];
+      $('plPrompt').value = ex[1];
+      draft.prompt = ex[1]; saveDraft();
+      $('plPrompt').focus();
+      return;
+    }
     const card = b.closest('.stage');
     if (card && b.dataset.act) {
       const i = Number(card.dataset.i), s = draft.steps;
@@ -225,6 +246,7 @@
     const box = $('plRun2');
     const st = status.state;
     box.hidden = st === 'idle';
+    $('plResults').hidden = st === 'idle';
     renderWhere();
     const nav = $('navPipeCnt');
     nav.textContent = st === 'running' || st === 'cancelling' ? 'Running' : st === 'waiting' ? 'Review' : st === 'error' ? 'Failed' : '';
@@ -342,6 +364,8 @@
     } else if (msg.type === 'customPipelineStatus') {
       const prev = status;
       status = msg;
+      // a new run starting: bring the Results section into view
+      if (msg.state === 'running' && !['running', 'waiting', 'cancelling'].includes(prev.state) && !$('view-pipelines').hidden) setTimeout(() => $('plResults').scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
       if (msg.state === 'running' && (prev.index !== msg.index || prev.state !== 'running' || prev.id !== msg.id)) activity = msg.activity || [];
       if (msg.state !== 'waiting') editing = false;
       renderRun();
