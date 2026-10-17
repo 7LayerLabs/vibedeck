@@ -63,8 +63,10 @@
     st.timer = setTimeout(() => { st.timer = 0; const f = st.full; st.full = false; scan(p, f); }, 140);
   }
 
+  // a decoration does not dispose its marker, and a live marker is updated on every buffer change
+  const drop = d => { d.deco.dispose(); d.marker.dispose(); };
   function clear(p) {
-    for (const d of p.marks.decos) d.deco.dispose();
+    p.marks.decos.forEach(drop);
     p.marks.decos = [];
   }
 
@@ -111,7 +113,7 @@
     st.decos = st.decos.filter(d => {
       if (d.marker.isDisposed) { d.deco.dispose(); return false; }
       const ln = d.marker.line;
-      if (ln >= from && (!want.has(ln) || want.get(ln) !== d.first || have.has(ln))) { d.deco.dispose(); return false; }
+      if (ln >= from && (!want.has(ln) || want.get(ln) !== d.first || have.has(ln))) { drop(d); return false; }
       have.set(ln, d);
       return true;
     });
@@ -125,7 +127,10 @@
         overviewRulerOptions: first ? { color: L.color, position: 'full' } : undefined,
       });
       if (!deco) { marker.dispose(); continue; }
+      // xterm calls this on every frame the element exists; style it once
       deco.onRender(el => {
+        if (el.dataset.vd) return;
+        el.dataset.vd = '1';
         el.style.pointerEvents = 'none';
         el.style.boxShadow = `inset 3px 0 0 ${L.color}`;
       });

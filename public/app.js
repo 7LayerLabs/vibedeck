@@ -86,6 +86,16 @@ function send(msg) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); }
 PromptMarks.onAsk = (p, text) => send({ type: 'asked', pane: p.id, text });
 function color(kind) { return COLORS[kind] || '#888'; }
 function kindName(kind) { return KIND_NAMES[kind] || kind; }
+function copyText(text, done) {
+  navigator.clipboard.writeText(text).then(() => toast(done, 'copy'), () => toast('Could not copy to the clipboard', 'copy', true));
+}
+// the pane's newest finished answer, clean from the CLI's own log (the server's paneFinal)
+function setLastReply(p, text) {
+  if (!p || typeof text !== 'string' || !text.trim()) return;
+  p.lastReply = text;
+  const b = p.el.querySelector('.copyreply');
+  if (b) b.hidden = false;
+}
 function toast(text, icon, bad) {
   const t = document.createElement('div');
   t.className = 'toast' + (bad ? ' bad' : '');
@@ -159,6 +169,7 @@ function buildPane(info) {
       <span class="pstate"></span>
       <span class="grow"></span>
       <button class="bcast" title="Include this pane when you broadcast">${ICONS.radio}<span>Broadcast</span></button>
+      <button class="iconbtn copyreply" title="Copy the last reply" hidden>${ICONS.copy}</button>
       <button class="iconbtn more" title="Pane actions">${ICONS.more}</button>
     </header>
     ${isNotes
@@ -226,6 +237,7 @@ function buildPane(info) {
     theme: THEME, fontSize: 12.5, lineHeight: 1.22,
     fontFamily: '"JetBrains Mono", "Cascadia Code", Consolas, monospace', fontWeight: 400, fontWeightBold: 600,
     cursorBlink: true, scrollback: 8000, allowProposedApi: true,
+    smoothScrollDuration: 120, // a wheel notch glides instead of jumping three lines
     overviewRuler: { width: 8 }, // marks where your prompts are (prompt-marks.js)
     linkHandler: { activate: (_e, uri) => openLink(uri) }, // links a CLI marks up itself (OSC 8)
   });
@@ -251,8 +263,26 @@ function buildPane(info) {
   term.attachCustomKeyEventHandler(e => {
     if (e.type === 'keydown' && !e.altKey && !e.metaKey
       && ((e.ctrlKey && (e.key === 'v' || e.key === 'V')) || (e.shiftKey && !e.ctrlKey && e.key === 'Insert'))) return false;
+    // Ctrl+C copies selected text (Windows Terminal style); with nothing selected it still reaches the
+    // CLI as "stop". Ctrl+Shift+C only ever copies.
+    if (e.ctrlKey && !e.altKey && !e.metaKey && (e.key === 'c' || e.key === 'C') && (e.shiftKey || term.hasSelection())) {
+      if (e.type === 'keydown') { e.preventDefault(); if (term.hasSelection()) { copyText(term.getSelection(), 'Copied'); term.clearSelection(); } }
+      return false;
+    }
     return PromptMarks.key(pane, e);
   });
+  // copy on select: a finished mouse selection goes straight to the clipboard
+  el.querySelector('.term').addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    document.addEventListener('mouseup', () => setTimeout(() => { if (term.hasSelection()) copyText(term.getSelection(), 'Copied'); }), { once: true });
+  });
+  // right-click: copy the selection, or paste when nothing is selected
+  el.querySelector('.term').addEventListener('contextmenu', e => {
+    e.preventDefault();
+    if (term.hasSelection()) { copyText(term.getSelection(), 'Copied'); term.clearSelection(); return; }
+    navigator.clipboard.readText().then(text => { if (text) term.paste(text); term.focus(); }, () => toast('Could not read the clipboard', 'copy', true));
+  });
+  el.querySelector('.copyreply').addEventListener('click', () => { if (pane.lastReply) copyText(pane.lastReply, 'Reply copied'); });
   el.querySelector('.gate-focus').addEventListener('click', () => { el.classList.remove('gated'); term.focus(); });
 
   // model + effort chip: shows what this pane was launched with; the menu changes it
@@ -575,8 +605,10 @@ ws.addEventListener('message', ev => {
     if (p) { p.dead = true; p.busySince = 0; p.el.classList.add('dead'); p.el.classList.remove('gated'); renderTargets(); }
   } else if (msg.type === 'paneFinal') {
     AnswerMarks.add(panes.get(msg.pane), msg);
+    setLastReply(panes.get(msg.pane), msg.final);
   } else if (msg.type === 'paneFinals') {
     AnswerMarks.load(panes.get(msg.pane), msg.finals);
+    setLastReply(panes.get(msg.pane), msg.finals?.[msg.finals.length - 1]?.final);
   } else if (msg.type === 'paneRan') {
     const p = panes.get(msg.pane);
     if (p) {

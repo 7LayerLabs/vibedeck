@@ -88,27 +88,59 @@
   }
 
   // ---------- decorating ----------
+  // Each colored line is its own xterm decoration, and xterm revisits every decoration it has ever
+  // drawn on every frame, so coloring whole sessions made scrolling jerky. scan() records the
+  // stretches to color (a marker on each one's first line); sync() keeps real decorations only on
+  // the lines within NEAR screens of the view and moves them as you scroll. A summary's first line
+  // carries its scrollbar mark, so that one decoration stays wherever you are.
+  const NEAR = 2;
+  // a decoration does not dispose its marker, and a live marker is updated on every buffer change
+  const drop = d => { d.deco.dispose(); d.marker.dispose(); };
   function clear(p) {
-    for (const d of p.answers.decos) d.deco.dispose();
-    p.answers.decos = [];
+    p.answers.decos.forEach(drop);
+    p.answers.spans.forEach(s => s.marker.dispose());
+    p.answers.decos = []; p.answers.spans = [];
   }
-  function add(p, cursorAbs, ln, opts, paint) {
+  function add(p, cursorAbs, ln, opts, paint, pinned) {
     const t = p.term;
     const marker = t.registerMarker(ln - cursorAbs);
     if (!marker) return;
     const deco = t.registerDecoration({ marker, width: t.cols, ...opts });
     if (!deco) { marker.dispose(); return; }
-    deco.onRender(el => { el.style.pointerEvents = 'none'; paint?.(el); });
-    p.answers.decos.push({ marker, deco });
+    // xterm calls this on every frame the element exists; style it once
+    deco.onRender(el => { if (el.dataset.vd) return; el.dataset.vd = '1'; el.style.pointerEvents = 'none'; paint?.(el); });
+    p.answers.decos.push({ marker, deco, pinned });
+  }
+  function span(p, cursorAbs, ln, count, opts, paint) {
+    const marker = p.term.registerMarker(ln - cursorAbs);
+    if (marker) p.answers.spans.push({ marker, count, opts, paint });
   }
   function decorate(p, L, workFrom, start, end) {
     const b = p.term.buffer.active, cursorAbs = b.baseY + b.cursorY;
-    if (workFrom >= 0 && L.style !== 'card') for (let ln = workFrom; ln < start; ln++)
-      add(p, cursorAbs, ln, { foregroundColor: L.style === 'two' ? L.work : FADED, layer: 'top' });
-    for (let ln = start; ln <= end; ln++) {
-      const ruler = ln === start ? { overviewRulerOptions: { color: L.summary, position: 'right' } } : {};
-      if (L.style === 'two') add(p, cursorAbs, ln, { foregroundColor: L.summary, layer: 'top', ...ruler });
-      else add(p, cursorAbs, ln, { backgroundColor: L.tint, layer: 'bottom', ...ruler }, el => { el.style.boxShadow = `inset 3px 0 0 ${L.summary}`; });
+    if (workFrom >= 0 && workFrom < start && L.style !== 'card')
+      span(p, cursorAbs, workFrom, start - workFrom, { foregroundColor: L.style === 'two' ? L.work : FADED, layer: 'top' });
+    const [opts, paint] = L.style === 'two' ? [{ foregroundColor: L.summary, layer: 'top' }]
+      : [{ backgroundColor: L.tint, layer: 'bottom' }, el => { el.style.boxShadow = `inset 3px 0 0 ${L.summary}`; }];
+    add(p, cursorAbs, start, { ...opts, overviewRulerOptions: { color: L.summary, position: 'right' } }, paint, true);
+    if (end > start) span(p, cursorAbs, start + 1, end - start, opts, paint);
+  }
+  // decorate the recorded lines near the view, drop the ones that scrolled far away
+  function sync(p) {
+    const t = p.term, st = p.answers;
+    if (!t || !st || (!st.spans.length && st.decos.every(d => d.pinned))) return;
+    const b = t.buffer.active, top = b.viewportY - NEAR * t.rows, bottom = b.viewportY + (NEAR + 1) * t.rows;
+    const covered = new Set();
+    st.decos = st.decos.filter(d => {
+      const ln = d.marker.line;
+      if (d.marker.isDisposed || (!d.pinned && (ln < top || ln > bottom))) { drop(d); return false; }
+      covered.add(ln);
+      return true;
+    });
+    const cursorAbs = b.baseY + b.cursorY;
+    for (const s of st.spans) {
+      if (s.marker.isDisposed) continue;
+      const to = Math.min(s.marker.line + s.count - 1, bottom);
+      for (let ln = Math.max(s.marker.line, top); ln <= to; ln++) if (!covered.has(ln)) add(p, cursorAbs, ln, s.opts, s.paint);
     }
   }
 
@@ -134,6 +166,7 @@
       used += ans.end - Math.max(workFrom, ans.start) + 1;
       limit = q ? q.start : ans.start;
     }
+    sync(p);
   }
   // after the pane has drawn what it has been sent so far. A search already waiting is kept, so a
   // CLI that never stops drawing (a spinner) still gets searched.
@@ -145,16 +178,17 @@
 
   function attach(p) {
     if (!p.term) return;
-    p.answers = { list: [], decos: [], timer: 0, len: 0 };
+    p.answers = { list: [], decos: [], spans: [], timer: 0, len: 0 };
     panes.add(p);
     p.term.onResize(() => schedule(p, 600));
+    p.term.onRender(() => sync(p)); // after every scroll or redraw
     p.term.onWriteParsed(() => {
       const st = p.answers;
       if (!st.list.length) return;
       // full screen: the CLI redrew it (new output, or you scrolled inside the CLI)
       if (p.term.buffer.active.type === 'alternate') schedule(p, 150);
       // the screen and scrollback were cleared (/clear, Ctrl+L), or old lines dropped off the top
-      else if (st.decos.length && (st.decos[0].marker.isDisposed || st.decos[st.decos.length - 1].marker.isDisposed)) schedule(p, 300);
+      else if (st.spans.some(s => s.marker.isDisposed) || st.decos.some(d => d.pinned && d.marker.isDisposed)) schedule(p, 300);
     });
   }
   function detach(p) { if (p?.answers) { clear(p); clearTimeout(p.answers.timer); } panes.delete(p); }

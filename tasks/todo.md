@@ -1,4 +1,114 @@
-# Project: VibeDeck — Feature: Clone from Git (BUILT 2026-10-16, uncommitted; desktop Browse untested)
+# Where things stand (updated 2026-10-16, end of session)
+
+## Done this session (all pushed to GitHub, main)
+1. **Clone from Git** (commit dc95fc1). Paste a repo link, pick a folder, clone with progress, open it.
+2. **Smoothness pass** (next commit, details in its section below):
+   - Root cause 1: answer and prompt highlights leaked a line marker every time they were
+     redrawn (twice per finished answer, every resize). Leaked markers made output parsing
+     ~145x slower once scrollback filled (1,166 ms vs 8 ms for 3,000 lines). Fixed.
+   - Root cause 2: one decoration per highlighted line, all revisited every frame. Now only lines
+     near the view get real decorations (at most ~220 instead of up to 6,000 per pane).
+   - Gliding mouse-wheel scroll.
+   - Copy: Ctrl+C copies a selection, copy on select, right-click copy/paste, Copy reply button.
+   - Desktop app bug: every clipboard write was denied ("Write permission denied"), so all
+     existing Copy buttons silently failed in the desktop app. Clipboard is now allowed.
+
+## What's left
+- [ ] **Derek tries it in the real app**: scrolling in a long session, the four copy behaviors,
+      and the Clone from Git **Browse** button (native folder picker, untested by me).
+- [ ] **Other PC**: `git pull` in its vibedeck folder (no new packages this time).
+- [ ] Prompt highlights: marker leak fixed and styled once, but not windowed like answer
+      highlights. Only worth doing if long sessions still feel jerky.
+- [ ] Quitting VibeDeck in the middle of a clone: the half-made folder may be left (untested).
+- [ ] `npm audit` reports 10 known issues in dependencies (1 critical, 1 high). Not looked at yet;
+      check which packages before running any fix (`--force` can break things).
+- [ ] INSTALL.md says `git clone https://github.com/7LayerLabs/pointer-.git`, but this repo is
+      7LayerLabs/vibedeck. Confirm which is right and fix the doc.
+- [ ] With gliding scroll, Ctrl+Shift+Up/Down pressed very fast (within ~120 ms) may land on the
+      same prompt twice. Untested, minor.
+- [ ] `tasks/todo.txt` is an older untracked copy of the compare-loop sprint notes; left alone.
+
+## How to test without touching real data
+- Browser mode: `VIBEDECK_DATA_DIR=<scratch folder> VIBEDECK_NO_PANES=1 VIBEDECK_PORT=<n> node server.js`
+  prints a private link. Put a `state.json` with `"kinds":["shell"]` and a `cwd` in that folder
+  to get one free shell pane.
+- Desktop app: `node_modules/electron/dist/electron.exe . --user-data-dir=<scratch folder>
+  --remote-debugging-port=9333` runs a separate copy (own data, own single-instance lock) that a
+  CDP script can drive. Call `Page.bringToFront` first or a background window's timers crawl.
+- Timing loops: set `term.options.smoothScrollDuration = 0` first. With glide on,
+  `scrollLines()` moves the view on later frames, so a synchronous loop never ends.
+
+---
+
+# Project: VibeDeck — Smoothness pass (BUILT 2026-10-16)
+
+## What Derek said
+"Doesn't have that smooth fluidity to it yet. NO auto copy replies, feels jerky when scrolling etc."
+
+## What I measured (throwaway instance, one pane, 6,000-line session with answer highlights)
+Cost of one scroll step (3 lines) in one pane, timed directly (Chrome throttled the test tab,
+so frame rates were not usable):
+| | highlight refresh | text redraw | total |
+|---|---|---|---|
+| highlights on, after scrolling through the session | 4.5 ms | 6.1 ms (spikes 31) | 10.6 ms |
+| highlights off | 0 | 0.4 ms | 0.4 ms |
+| only the newest 380 lines scrolled | 0.3 ms | 1.5 ms | 1.9 ms |
+The 60fps budget is 16.7 ms per frame, before the browser paints.
+- Root cause: each highlighted line is its own xterm decoration. Once a line has been on screen,
+  xterm keeps a page element for it and revisits every one of them on every frame
+  (`_doRefreshDecorations`), and answer-marks re-applies their style each time. So the longer
+  the session and the more you scroll around, the jerkier it gets.
+- Copy: Ctrl+C with text selected sends "stop" to the AI instead of copying. No right-click
+  menu in panes. No copy button for a pane's reply (only in Compare).
+
+## Plan (Derek picked all four copy behaviors)
+### Scroll (root cause)
+- [x] `answer-marks.js`: scan() records stretches (one marker per stretch); sync() keeps real
+      decorations only within 2 screens of the view, run from `term.onRender`. A summary's
+      first line (scrollbar mark) stays pinned.
+- [x] Style each highlight element once, not every frame (both files)
+- [x] **Found during the build:** xterm's decoration `dispose()` does not dispose its marker, and
+      neither file disposed them. Every rescan leaked a marker per highlighted line. Both files
+      now dispose the marker with the decoration.
+- [ ] `prompt-marks.js` windowing: not done (see "What's left")
+- [x] Glide wheel scrolling: `smoothScrollDuration: 120`
+- [x] Re-measured (numbers below)
+
+### Copy
+- [x] Ctrl+C copies a selection (else still "stop"); Ctrl+Shift+C only copies
+- [x] Copy on select
+- [x] Copy reply button in each AI pane's header (from `paneFinal` / `paneFinals`)
+- [x] Right-click: copy the selection, or paste
+- [x] `desktop/main.cjs`: allow `clipboard-sanitized-write` and `clipboard-read` (everything else
+      still denied). Before this, every clipboard write in the desktop app failed.
+
+### Finish
+- [x] `npm test` green (40/40)
+- [ ] Derek tries it in the real app
+
+## Review
+| File | Change |
+|------|--------|
+| `public/answer-marks.js` | spans + `sync()` window (NEAR = 2 screens), pinned summary-start line, `drop()` disposes marker with decoration, style-once `onRender`, rescan trigger checks spans |
+| `public/prompt-marks.js` | `drop()` disposes markers too; style-once `onRender` |
+| `public/app.js` | `smoothScrollDuration: 120`; Ctrl+C / Ctrl+Shift+C; copy on select (mouseup after a left-button press in the terminal); right-click copy/paste; `.copyreply` button + `setLastReply`; `copyText` helper with a failure toast |
+| `desktop/main.cjs` | permission handlers allow clipboard read/write only |
+| `README.md` | copy + glide line under Workbench |
+
+Measured (one pane, 6,000-line session, 30 answers):
+- Desktop app, 3,000 lines of output once scrollback is full: **old 1,166 ms** (36,000 leaked
+  markers after 5 rescans) vs **new 8 ms** (markers flat at 90-202).
+- Live decorations: old up to 6,000 per pane; new at most 220.
+- Scroll step cost in Chrome browser mode, old code: 10.6 ms with highlights vs 0.4 ms without.
+  In the desktop app the timing harness carries ~8 ms of fixed overhead per step (no-highlight
+  baseline 9.2 ms), so old (7.9) vs new (7.2) there is inside the noise. Judge scroll by feel.
+- Copy behaviors driven with real mouse/key events in an isolated desktop app: all pass.
+- Screenshots: summary card and faded work lines look the same as before, including lines
+  that scroll into view.
+
+---
+
+# Project: VibeDeck — Feature: Clone from Git (BUILT + PUSHED 2026-10-16, dc95fc1; desktop Browse untested)
 
 ## What Derek asked
 "Open a folder from a git repo, then set up a folder on the PC to move that git to."

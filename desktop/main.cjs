@@ -9,8 +9,11 @@ app.whenReady().then(()=>{
   if(process.platform==='darwin'){
     try {process.env.PATH=execFileSync(process.env.SHELL||'/bin/zsh',['-ilc','printf "%s" "$PATH"'],{encoding:'utf8',timeout:5000}).trim();} catch {}
   }
-  session.defaultSession.setPermissionRequestHandler((_contents,_permission,callback)=>callback(false));
-  session.defaultSession.setPermissionCheckHandler(()=>false);
+  // Only the clipboard is allowed: copy buttons, Ctrl+C, copy on select and right-click paste in the
+  // app's own page (the window never shows any other site). Everything else stays denied.
+  const allowed=permission=>permission==='clipboard-sanitized-write'||permission==='clipboard-read';
+  session.defaultSession.setPermissionRequestHandler((_contents,permission,callback)=>callback(allowed(permission)));
+  session.defaultSession.setPermissionCheckHandler((_contents,permission)=>allowed(permission));
   backend=fork(path.join(app.getAppPath(),'server.js'),[],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1',VIBEDECK_PORT:'0',VIBEDECK_DATA_DIR:app.getPath('userData'),VIBEDECK_VAULT:'1'},stdio:['ignore','pipe','pipe','ipc'],windowsHide:true});
   // Drain child pipes so extended use cannot stall the local engine.
   backend.stdout.on('data',()=>{});
