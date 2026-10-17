@@ -21,6 +21,8 @@ For browser development, `npm start` prints a private localhost session link. Op
 
 Pick a project folder. Terminals and pipelines only start inside a real project folder, never your whole user folder. The desktop app has a native Browse button; browser mode takes a pasted path.
 
+Or clone one: **Clone from Git** (on the start screen and in the Project folder menu) takes an https or ssh repo link, a folder to put it in and a folder name (filled in from the link), clones it with live progress and opens it. It never writes into a folder that already has files, Cancel removes the half-made folder, and private repos use the git sign-in already on the machine.
+
 ## Workbench
 
 - Up to five real terminal panes. Each pane header has a model chip, a live timer while it answers, a Broadcast on/off toggle, and a menu (send the answer to Notes or Sidecar, relay it to another pane, switch CLI, move, restart, close).

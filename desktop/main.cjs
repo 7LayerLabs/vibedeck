@@ -37,7 +37,7 @@ app.whenReady().then(()=>{
       return;
     }
     if(message.type==='pickFolder'){
-      const options={title:'Choose a project folder',properties:['openDirectory'],defaultPath:typeof message.defaultPath==='string'?message.defaultPath:undefined};
+      const options={title:typeof message.title==='string'?message.title:'Choose a project folder',properties:['openDirectory','createDirectory'],defaultPath:typeof message.defaultPath==='string'?message.defaultPath:undefined};
       (window?dialog.showOpenDialog(window,options):dialog.showOpenDialog(options))
         .then(result=>backend.send({type:'pickFolderResult',requestId:message.requestId,dir:result.canceled?'':result.filePaths[0]||''}))
         .catch(()=>backend.send({type:'pickFolderResult',requestId:message.requestId,dir:''}));

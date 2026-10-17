@@ -560,6 +560,7 @@ ws.addEventListener('message', ev => {
     renderAllNoteCards();
     setJudges(msg.judges || []);
     setCwd(msg.cwd || '', msg.recents || [], msg.needsFolder);
+    cloneForms.forEach(f => { f.browse.hidden = !desktop; if (!f.parent.value) f.parent.value = msg.cloneParent || ''; });
     setPlaybooks();
     if (!panes.size) msg.panes.forEach(p => buildPane(p));
     PromptMarks.known(history.slice(-100).map(h => h.text));
@@ -686,7 +687,17 @@ ws.addEventListener('message', ev => {
   } else if (msg.type === 'cwdError') {
     toast(msg.text || 'That folder does not exist.', 'folder', true);
   } else if (msg.type === 'folderPicked') {
-    if (msg.dir) send({ type: pickMode === 'add' ? 'addWorkspace' : 'setcwd', dir: msg.dir });
+    if (msg.purpose === 'clone') { if (msg.dir) cloneForms.forEach(f => { f.parent.value = msg.dir; }); }
+    else if (msg.dir) send({ type: pickMode === 'add' ? 'addWorkspace' : 'setcwd', dir: msg.dir });
+  } else if (msg.type === 'cloneProgress') {
+    setCloneStatus(msg.text, 'run');
+  } else if (msg.type === 'cloneDone') {
+    cloneForms.forEach(f => { f.url.value = ''; f.name.value = ''; f.name.placeholder = 'Folder name'; if (msg.parent) f.parent.value = msg.parent; });
+    setCloneStatus('');
+    toast(`Cloned into ${msg.dir}`, 'folder');
+  } else if (msg.type === 'cloneError') {
+    setCloneStatus(msg.text, 'bad');
+    toast(msg.text, 'folder', true);
   } else if (msg.type === 'recents') {
     setCwd(cwd, msg.recents || [], needsFolder);
   } else if (msg.type === 'pathTyped') {
@@ -748,6 +759,39 @@ $('gateInput').addEventListener('keydown', e => { if (e.key === 'Enter') goCwd($
 const browse = () => { toggleCwdPanel(false); pickMode = 'open'; send({ type: 'pickFolder' }); };
 $('cwdBrowse').addEventListener('click', browse);
 $('gateBrowse').addEventListener('click', browse);
+
+// ---------- clone from git ----------
+// the same form sits in the folder popover and on the start screen; both show the one running clone
+const repoName = link => {
+  const u = link.trim().replace(/^"|"$/g, '');
+  const gh = /github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[/?#].*)?$/i.exec(u);
+  return gh ? gh[2] : u.replace(/[\\/]+$/, '').split(/[\\/:]/).pop().replace(/\.git$/i, '');
+};
+const cloneForms = [...document.querySelectorAll('.clone-host')].map(host => {
+  host.appendChild($('cloneTpl').content.cloneNode(true));
+  const f = {};
+  host.querySelectorAll('[data-c]').forEach(el => { f[el.dataset.c] = el; });
+  f.url.addEventListener('input', () => { f.name.placeholder = repoName(f.url.value) || 'Folder name'; });
+  f.browse.addEventListener('click', () => send({ type: 'pickFolder', purpose: 'clone' }));
+  const go = () => {
+    if (!f.url.value.trim()) return f.url.focus();
+    send({ type: 'cloneRepo', url: f.url.value, parent: f.parent.value, name: f.name.value });
+  };
+  f.go.addEventListener('click', go);
+  [f.url, f.parent, f.name].forEach(el => el.addEventListener('keydown', e => { if (e.key === 'Enter') go(); }));
+  f.cancel.addEventListener('click', () => send({ type: 'cloneCancel' }));
+  return f;
+});
+function setCloneStatus(text, mode) {
+  cloneForms.forEach(f => {
+    f.status.hidden = !text;
+    f.text.textContent = text || '';
+    f.text.title = text || '';
+    f.status.classList.toggle('bad', mode === 'bad');
+    f.cancel.hidden = mode !== 'run';
+    [f.url, f.parent, f.name, f.go, f.browse].forEach(el => { el.disabled = mode === 'run'; });
+  });
+}
 
 // ---------- playbooks ----------
 const playbookEl = $('playbook');

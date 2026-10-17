@@ -334,16 +334,22 @@ function readTemplates(){
 
 // "Browse" asks the desktop shell for a native folder dialog; browser mode types a path instead.
 const folderRequests=new Map();
-function pickFolder(){
+function pickFolder({title,defaultPath}={}){
   if(!process.send)return Promise.resolve(null);
   const requestId=require('node:crypto').randomUUID();
   return new Promise(resolve=>{
     const timer=setTimeout(()=>{folderRequests.delete(requestId);resolve(null);},10*60000);
     folderRequests.set(requestId,dir=>{clearTimeout(timer);resolve(dir);});
-    process.send({type:'pickFolder',requestId,defaultPath:state.cwd});
+    process.send({type:'pickFolder',requestId,defaultPath:defaultPath||state.cwd,title});
   });
 }
 process.on('message',message=>{if(message?.type!=='pickFolderResult')return;const done=folderRequests.get(message.requestId);if(done){folderRequests.delete(message.requestId);done(typeof message.dir==='string'?message.dir:null);}});
+
+// ---------- clone from git ----------
+const gitClone=require('./lib/git-clone');
+let activeClone=null; // one clone at a time
+// where Clone from Git puts repos: the last place used, else beside the current project
+const cloneParent=()=>[state.cloneParent,needsFolder()?'':path.dirname(state.cwd),HOME].find(d=>{try{return d&&fs.statSync(d).isDirectory();}catch{return false;}});
 app.get('/api/desktop-health',(req,res)=>res.json({ok:true,version:require('./package.json').version,providers:HEALTH}));
 
 const sessions = new Map(); // instance id -> session (insertion order = pane order)
@@ -1086,6 +1092,7 @@ wss.on('connection', (ws) => {
     maxPanes: MAX_PANES,
     cwd: state.cwd,
     recents: state.recents,
+    cloneParent: cloneParent(),
     history: readHistory(),
     health: HEALTH,
     usage,
@@ -1167,9 +1174,29 @@ wss.on('connection', (ws) => {
       return;
     }
     if(msg.type==='pickFolder'){
-      pickFolder().then(dir=>reply({type:'folderPicked',dir:dir||''}));
+      const forClone=msg.purpose==='clone';
+      pickFolder(forClone?{title:'Choose where to put the repo',defaultPath:cloneParent()}:{}).then(dir=>reply({type:'folderPicked',dir:dir||'',purpose:forClone?'clone':''}));
       return;
     }
+    if(msg.type==='cloneRepo'){
+      if(activeClone)return notice('A clone is already running.');
+      if(customRunner.active)return notice('A pipeline is running in this folder. Stop it or let it finish first.');
+      let url,dest;
+      try { url=gitClone.normalizeUrl(msg.url); dest=gitClone.destination(msg.parent,String(msg.name||'').trim()||gitClone.repoName(url)); }
+      catch(e){ return reply({type:'cloneError',text:e.message}); }
+      state.cloneParent=path.dirname(dest.target);saveState();
+      broadcastWs({type:'cloneProgress',text:`Cloning into ${dest.target}`});
+      activeClone=gitClone.clone({url,...dest,log:slog,
+        onProgress:text=>broadcastWs({type:'cloneProgress',text}),
+        onDone:result=>{
+          activeClone=null;
+          if(!result.ok)return broadcastWs({type:'cloneError',text:result.cancelled?'Clone cancelled.':result.error});
+          broadcastWs({type:'cloneDone',dir:dest.target,parent:state.cloneParent});
+          handleMessage({type:'setcwd',dir:dest.target},ws); // open it, same as Open here
+        }});
+      return;
+    }
+    if(msg.type==='cloneCancel'){activeClone?.cancel();return;}
     if(msg.type.startsWith('customPipeline')){
       try {
         if(msg.type==='customPipelineStart'){
@@ -1410,6 +1437,7 @@ function shutdown() {
   // the process exits before a stopped stage finishes closing, so record the run now
   if(customRunner?.active) saveRun({...customRunner.status(), state:'cancelled', text:'VibeDeck was closed during this run.'});
   if(customRunner) customRunner.cancel();
+  activeClone?.cancel();
   server.close();
   setTimeout(()=>process.exit(0),300).unref();
 }

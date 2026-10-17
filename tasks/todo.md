@@ -1,3 +1,76 @@
+# Project: VibeDeck — Feature: Clone from Git (BUILT 2026-10-16, uncommitted; desktop Browse untested)
+
+## What Derek asked
+"Open a folder from a git repo, then set up a folder on the PC to move that git to."
+Read as: paste a repo link, pick (or make) a folder on this PC, VibeDeck clones the
+repo there and opens it as the project. (Not a single subfolder of a repo.)
+
+## What it looks like
+A **Clone from Git** section in two places: the Project folder popover, and the
+"Choose a project folder" start screen.
+1. **Repo link**: `https://github.com/owner/repo(.git)`, `github.com/owner/repo`,
+   or `git@github.com:owner/repo.git`
+2. **Put it in**: a parent folder. Browse opens the Windows folder picker, which has a
+   New folder button, so a new home like `C:\Users\Derek\code` can be made on the spot.
+   Remembered for next time. First time: the folder the current project sits in.
+3. **Folder name**: filled in from the repo name, editable.
+4. **Clone**: a progress line ("Receiving objects 42%") with Cancel. When done,
+   VibeDeck opens the new folder (every pane restarts there, same as Open here) and it
+   joins Recent folders.
+
+## Rules
+- Never overwrites: refuses if the target folder exists and is not empty.
+- Only https and ssh links (no `file://`, no `ext::`). git runs directly with no
+  shell, and the link goes after `--`, so an odd link can't run commands.
+- Private repos use the Git sign-in already on this PC (Git Credential Manager,
+  7LayerLabs). If git needs a sign-in it can't get, show git's error; never hang.
+- Cancel stops git and removes only the half-made folder this clone created.
+- Blocked while a pipeline runs (same rule as switching folders).
+
+## Plan
+- [x] `lib/git-clone.js` (new): link check, folder name from link, run
+      `git clone --progress`, parse progress, cancel + cleanup
+- [x] `server.js`: `cloneRepo` / `cloneCancel` messages, progress to the screen,
+      open folder on success, remember parent in state.json; pickFolder takes a title
+- [x] `desktop/main.cjs`: folder picker title comes from the request
+- [x] `public/index.html`, `public/app.js`, `public/styles.css`: the Clone section
+      (popover + start screen), progress line, Cancel
+- [x] `test/git-clone.test.js`: link check, folder names, existing-folder refusal
+- [x] README: one line under features
+- [x] Verify on a TEST instance (own data dir, browser mode): clone a public repo
+      into the scratchpad, confirm it opens + shows in recents; confirm the
+      non-empty-folder refusal and Cancel cleanup. Live state.json untouched.
+- [ ] Verify the Browse picker in the desktop app (needs Derek: restart VibeDeck,
+      Project folder menu > Clone from Git > Browse)
+- [x] `npm test` green (40/40: 36 existing + 4 new)
+- [x] Review section below
+
+## Out of scope
+Branch picker, shallow clones, submodules, cloning into the current project.
+
+## Review
+| File | Change |
+|------|--------|
+| `lib/git-clone.js` | **new**: `normalizeUrl` (https/ssh only; GitHub browser links trimmed to the repo), `repoName`, `checkName` (one safe folder name), `destination` (parent must exist, target missing or empty), `clone` (spawn git, no shell, link after `--`, `GIT_TERMINAL_PROMPT=0`, progress, cancel = `taskkill /T /F` on Windows, cleanup of only what it made) |
+| `server.js` | `cloneRepo` / `cloneCancel`; one clone at a time; blocked during pipelines; on success runs the normal `setcwd` path (panes restart, recents updated); `state.cloneParent` remembered; `cloneParent` in init; clone killed on shutdown; `pickFolder` takes title + default path |
+| `desktop/main.cjs` | folder dialog title from the request; `createDirectory` (macOS New Folder; Windows has it natively) |
+| `public/index.html`, `app.js`, `styles.css` | one `<template>` form placed on the start screen and in the Project folder popover; folder name placeholder follows the link; progress/error line + Cancel shared by both copies |
+| `test/git-clone.test.js` | **new**: link rules, names, destination refusals, real local clone: success, failure cleanup, failure into an empty folder keeps the folder, cancel cleanup |
+| `README.md` | Clone from Git paragraph under First run |
+
+Verified on a throwaway server (own data dir, no panes):
+- bad link refused
+- `github.com/.../tree/main` link cloned + opened
+- second clone into the same folder refused, files intact
+- VS Code clone cancelled 20 MB in: half-made folder (28 entries) fully removed, no git processes left behind
+- UI: start-screen form, red refusal line, Enter clones and opens, popover form clears and remembers the destination, no console errors
+
+Notes / follow-ups:
+- Progress updates are throttled to one per 150ms, so the last % before "done" can be skipped. Harmless.
+- Quitting VibeDeck mid-clone stops git, but the engine exits ~300ms later, so cleanup of the half-made folder may not finish (untested). If one is left, the next clone into it is refused with a clear message; delete it by hand.
+
+---
+
 # Project: VibeDeck — Sprint: trustworthy compare loop
 
 ## Problem Statement

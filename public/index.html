@@ -62,6 +62,8 @@
             </div>
             <div class="row"><input class="input mono" id="gateInput" placeholder="Or paste a path, like C:\code\my-app" spellcheck="false"><button class="btn" id="gateGo">Open</button></div>
             <div class="recents" id="gateRecents"></div>
+            <div class="eyebrow">Or clone from Git</div>
+            <div class="clone-host"></div>
           </div>
         </div>
         <div id="deck">
@@ -128,7 +130,24 @@
   <div class="eyebrow">Recent folders</div>
   <div class="recents" id="cwdRecents"></div>
   <div class="note">Open here restarts every pane in that folder. Add only lists it in the sidebar so you can browse its files.</div>
+  <div class="eyebrow clone-eyebrow">Clone from Git</div>
+  <div class="clone-host"></div>
 </div>
+<!-- Clone from Git: one form, placed in the folder popover and on the start screen -->
+<template id="cloneTpl">
+  <div class="clone">
+    <input class="input mono" data-c="url" placeholder="Repo link, like https://github.com/owner/repo" spellcheck="false">
+    <div class="row">
+      <input class="input mono" data-c="parent" placeholder="Put it in, like C:\code" spellcheck="false" title="The folder the repo goes into">
+      <button class="btn" data-c="browse" hidden><svg class="i" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Browse</button>
+    </div>
+    <div class="row">
+      <input class="input mono" data-c="name" placeholder="Folder name" spellcheck="false" title="Name of the new folder. Filled in from the repo link.">
+      <button class="btn primary" data-c="go">Clone</button>
+    </div>
+    <div class="clone-status" data-c="status" hidden><span data-c="text"></span><button class="btn sm" data-c="cancel">Cancel</button></div>
+  </div>
+</template>
 <div class="popover" id="paneMenu" hidden></div>
 
 <!-- Go to file -->
