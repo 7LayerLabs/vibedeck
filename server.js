@@ -25,10 +25,17 @@ fs.mkdirSync(PIPELINE_DIR, { recursive: true });
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
 
 // Seed editable examples into the writable profile when running a packaged app.
+// A copy that still holds a starter we have since replaced is refreshed; edited copies are kept.
+const RETIRED_STARTERS = {
+  'plan-build-review.json': '{"name":"Plan, build, review","steps":[{"kind":"codex","role":"Plan","model":""},{"kind":"claude","role":"Build","model":""},{"kind":"codex","role":"Review","model":""}]}',
+};
+const isRetired = (file, destination) => {
+  try { return JSON.stringify(JSON.parse(fs.readFileSync(destination, 'utf8'))) === RETIRED_STARTERS[file]; } catch { return false; }
+};
 if(USER_DATA!==__dirname) for(const folder of ['playbooks','pipelines']) {
   for(const file of fs.readdirSync(path.join(__dirname,folder))) {
     const destination=path.join(USER_DATA,folder,file);
-    if(!fs.existsSync(destination))fs.copyFileSync(path.join(__dirname,folder,file),destination);
+    if(!fs.existsSync(destination) || (RETIRED_STARTERS[file] && isRetired(file, destination)))fs.copyFileSync(path.join(__dirname,folder,file),destination);
   }
 }
 
@@ -38,10 +45,13 @@ if(USER_DATA!==__dirname) for(const folder of ['playbooks','pipelines']) {
 const IS_WIN = process.platform === 'win32';
 const NPM_BIN = path.join(process.env.APPDATA || '', 'npm');
 // windows needs the npm .cmd shims / grok.exe path; mac & linux find them on PATH
+// The PATH this process got can be stale, so the folders the installers use are checked too
+// (Claude's native installer puts claude.exe in ~/.local/bin).
 const CLI = name => {
   if(!IS_WIN)return name;
   try {const found=spawnSync('where.exe',[name],{encoding:'utf8',windowsHide:true}).stdout?.trim().split(/\r?\n/).find(p=>/\.(cmd|exe)$/i.test(p));if(found)return found;} catch {}
-  return path.join(NPM_BIN,`${name}.cmd`);
+  const known=[path.join(HOME,'.local','bin',`${name}.exe`),path.join(NPM_BIN,`${name}.cmd`)];
+  return known.find(p=>fs.existsSync(p)) || known[known.length-1];
 };
 const USER_SHELL = process.env.SHELL || '/bin/zsh';
 // Provider permission prompts remain enabled in every terminal.
@@ -86,9 +96,13 @@ const kindOf = id => ROSTER.find(r => r.id === id);
 const LOG_FILE = path.join(DATA_DIR, 'server.log');
 function slog(...args) {
   const line = `${new Date().toISOString()} ${args.join(' ')}`;
-  console.log(line);
+  try { console.log(line); } catch {}
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch {}
 }
+// once the desktop app closes its end of stdout, every console.log fails with EPIPE; without these
+// each failure was logged, which failed again, and the log filled with thousands of repeats
+process.stdout.on('error', () => {});
+process.stderr.on('error', () => {});
 // a helper process dying mid-write (EPIPE) must not take the whole deck down
 process.on('uncaughtException', e => slog(`UNCAUGHT: ${e.stack || e}`));
 process.on('unhandledRejection', e => slog(`UNHANDLED REJECTION: ${e}`));
@@ -103,6 +117,17 @@ try {
 state.kinds = state.kinds.filter(k => kindOf(k)).slice(0, MAX_PANES);
 if (!state.kinds.length) state.kinds = DEFAULT_ACTIVE;
 if (!fs.existsSync(state.cwd)) state.cwd = HOME;
+// Starting picks: Claude on Opus 5.5 at high effort, Codex on GPT-6.1-Sol. Filled in once, only
+// where no model was chosen yet, so a later pick from a pane's chip is kept.
+const DEFAULT_PICKS = { claude: { model: 'claude-opus-5-5', effort: 'high' }, codex: { model: 'gpt-6.1-sol', effort: '' } };
+if ((state.picksVersion || 0) < 1) {
+  state.models = { ...(state.models || {}) };
+  for (const [kind, pick] of Object.entries(DEFAULT_PICKS)) {
+    const saved = state.models[kind] || {};
+    if (!saved.model) state.models[kind] = { model: pick.model, effort: saved.effort || pick.effort };
+  }
+  state.picksVersion = 1;
+}
 function saveState() {
   // an empty deck (no folder chosen yet) must not forget which panes to open later
   if (sessions.size) state.kinds = [...sessions.values()].map(s => s.kind);
@@ -224,7 +249,7 @@ app.get('/api/fs/list', fsRoute(q => workspace.list(q.root, q.rel)));
 app.get('/api/fs/read', fsRoute(q => workspace.read(q.root, q.rel)));
 app.get('/api/fs/all', fsRoute(q => workspace.all(q.root)));
 app.get('/api/fs/git', fsRoute(q => workspace.git(q.root)));
-app.get('/api/fs/raw', fsRoute((q, res) => { const { file, type } = workspace.raw(q.root, q.rel); res.type(type); res.sendFile(file); }));
+app.get('/api/fs/raw', fsRoute((q, res) => { const { file, type } = workspace.raw(q.root, q.rel); res.type(type); res.sendFile(file, { dotfiles: 'allow' }); }));
 
 // ---------- checkpoints + review: a snapshot before every round, so agent edits can be kept, undone or rewound ----------
 const checkpoints = require('./lib/checkpoints').createCheckpoints({ dataDir: DATA_DIR, log: slog });
@@ -303,6 +328,7 @@ const API_TIMEOUT_MS=10*60000;
 // the project folder as it was when the current run started, to report what the run created or changed
 const filesLib=require('./lib/files');
 let runSnapshot=null;
+let pipelineStarting=false; // between "start" and the runner taking over (the checkpoint wait)
 const customRunner=new PipelineRunner({
   resolveCommand:kind=>kindOf(kind)?.cmd||CLI(kind),
   execute:args=>{
@@ -655,7 +681,26 @@ const MODELS_FILE = path.join(USER_DATA, 'models.json');
 const modelsLib = require('./lib/models');
 let modelsCfg = modelsLib.defaultModels();
 // models.json written by 2.1 and earlier held shortcut names ("opus") and stale codex IDs; only v2 files are trusted
-try { const saved = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8')); if (saved.version === 2) { delete saved.version; modelsCfg = { ...modelsCfg, ...saved }; } } catch {}
+// A saved list keeps its order, but models added to the catalog since it was saved are appended
+try {
+  const saved = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8'));
+  if (saved.version === 2) for (const [kind, cfg] of Object.entries(saved)) {
+    const base = modelsCfg[kind];
+    if (!base || !Array.isArray(cfg?.models)) continue;
+    modelsCfg[kind] = { ...base, ...cfg, models: [...cfg.models, ...base.models.filter(id => !cfg.models.includes(id))], labels: { ...base.labels, ...cfg.labels } };
+  }
+} catch {}
+// Codex's own model cache and each CLI's configured default, read fresh at every start
+function readCliModels() {
+  const codex = modelsLib.codexCacheModels(HOME);
+  if (codex.length) setModels('codex', codex, false);
+  for (const kind of ['claude', 'codex']) {
+    const def = modelsLib.cliDefaultModel(kind, HOME, modelsCfg[kind].models);
+    if (def) modelsCfg[kind].defaultLabel = modelsCfg[kind].labels[def] || modelsLib.labelFor(kind, def);
+  }
+  return codex.length;
+}
+readCliModels();
 function saveModels() {
   try { fs.writeFileSync(MODELS_FILE, JSON.stringify({ version: 2, ...modelsCfg }, null, 2)); } catch (e) { slog(`models.json write failed: ${e.message}`); }
 }
@@ -715,7 +760,9 @@ async function updateModels() {
       if (g.length) { setModels('grok', g, false); report.push(`Grok ${g.length} models`); }
       else report.push('Grok list unavailable, kept the current one');
     }
-    for (const kind of ['claude', 'codex']) {
+    const codexCached = readCliModels();
+    if (codexCached) report.push(`Codex ${codexCached} models`);
+    for (const kind of codexCached ? ['claude'] : ['claude', 'codex']) {
       let painted = null;
       for (let tries = 0; tries < 3 && painted === null; tries++) {
         if (tries) await new Promise(r => setTimeout(r, 4000));
@@ -1168,7 +1215,7 @@ wss.on('connection', (ws) => {
       const isFile=fs.statSync(target).isFile();
       try {
         const child=IS_WIN?spawn('explorer.exe',[isFile?`/select,${target}`:target],{detached:true,stdio:'ignore'})
-          :spawn('open',isFile?['-R',target]:[target],{detached:true,stdio:'ignore'});
+          :spawn('open',['-R',target],{detached:true,stdio:'ignore'}); // -R reveals; a bare open would launch a .app folder
         child.on('error',()=>{});child.unref();
       } catch {}
       return;
@@ -1204,11 +1251,14 @@ wss.on('connection', (ws) => {
           if(lastRound?.pending?.size)throw Error('Wait for the current broadcast round to finish first.');
           const missing=(msg.definition?.steps||[]).find(step=>step.kind!=='api' && HEALTH.find(h=>h.id===step.kind) && !HEALTH.find(h=>h.id===step.kind).ok);
           if(missing)throw Error(`The ${missing.kind} CLI is not installed. Install it or pick another provider for that stage.`);
-          try { runSnapshot=filesLib.snapshot(state.cwd); } catch { runSnapshot=null; }
+          if(pipelineStarting)throw Error('The pipeline is already starting.');
+          // the checkpoint can take a while, so the folder is pinned now and nothing may move it meanwhile
+          const cwd=state.cwd;pipelineStarting=true;
+          try { runSnapshot=filesLib.snapshot(cwd); } catch { runSnapshot=null; }
           checkpointBefore('pipeline',msg.prompt,`Before ${String(msg.definition?.name||'pipeline').slice(0,60)}`).then(()=>{
-            try { customRunner.start(msg.definition,msg.prompt,state.cwd,{autoApprove:!!msg.autoApprove,handsFree:!!msg.handsFree}); }
+            try { customRunner.start(msg.definition,msg.prompt,cwd,{autoApprove:!!msg.autoApprove,handsFree:!!msg.handsFree}); }
             catch(e){ reply({type:'customPipelineError',text:e.message}); }
-          });
+          }).finally(()=>{pipelineStarting=false;});
         }
         else if(msg.type==='customPipelineResume')customRunner.resume({note:msg.note,editedOutput:msg.editedOutput});
         else if(msg.type==='customPipelineRetry')customRunner.retry({note:msg.note});
@@ -1220,7 +1270,7 @@ wss.on('connection', (ws) => {
     }
     // A running pipeline works in the project folder, so nothing may move the folder or
     // fire competing prompts at it. Typing into a pane stays allowed.
-    if(customRunner.active && ['broadcast','relay','setcwd','replace'].includes(msg.type))return notice('A pipeline is running in this folder. Stop it or let it finish first.');
+    if((customRunner.active||pipelineStarting) && ['broadcast','relay','setcwd','replace'].includes(msg.type))return notice('A pipeline is running in this folder. Stop it or let it finish first.');
 
     if (msg.type === 'asked' && s && typeof msg.text === 'string' && msg.text.trim()) {
       s.asked = { text: msg.text.slice(0, 32000), ts: Date.now() }; // a prompt typed straight into the pane
@@ -1372,7 +1422,7 @@ wss.on('connection', (ws) => {
       // every pane is a fresh session now: clear "ended" covers and old waiting cards
       for (const id of sessions.keys()) broadcastWs({ type: 'restarted', pane: id, info: paneInfo(id) });
     } else if (msg.type === 'resize' && s && s.alive && s.proc) {
-      const cols = Math.max(2, msg.cols | 0), rows = Math.max(2, msg.rows | 0);
+      const cols = Math.min(1000, Math.max(2, msg.cols | 0)), rows = Math.min(500, Math.max(2, msg.rows | 0));
       try { s.proc.resize(cols, rows); } catch {}
       try { s.screen?.resize(cols, rows); } catch {}
     } else if (msg.type === 'restart' && s) {

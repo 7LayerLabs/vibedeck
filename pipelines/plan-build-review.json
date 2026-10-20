@@ -1,8 +1,8 @@
 {
   "name": "Plan, build, review",
   "steps": [
-    { "kind": "codex", "role": "Plan", "model": "" },
-    { "kind": "claude", "role": "Build", "model": "" },
-    { "kind": "codex", "role": "Review", "model": "" }
+    { "kind": "claude", "role": "Plan", "model": "claude-fable-5-1" },
+    { "kind": "claude", "role": "Build", "model": "claude-opus-5-5", "effort": "high" },
+    { "kind": "codex", "role": "Review", "model": "gpt-6.1-sol" }
   ]
 }

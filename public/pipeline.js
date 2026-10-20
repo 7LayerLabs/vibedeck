@@ -6,12 +6,16 @@
     Build: 'Makes the file changes.',
     Review: 'Checks the work. No file changes.',
   };
-  const DRAFT_KEY = 'vibedeck-pipeline-draft';
+  // v2: the default pipeline changed to Fable 5.1 plan, Opus 5.5 build, GPT-6.1-Sol review, so drafts
+  // saved before that start over on it (keeping the typed request)
+  const DRAFT_KEY = 'vibedeck-pipeline-draft-v2';
   let definitions = [], templates = [], apiConnections = [];
   let status = { state: 'idle', outputs: [] }, activity = [];
   let openAnswers = new Set(), editing = false;
   let draft = null;
+  let oldPrompt = '';
   try { draft = JSON.parse(load(DRAFT_KEY)); } catch {}
+  if (!draft) try { oldPrompt = JSON.parse(load('vibedeck-pipeline-draft'))?.prompt || ''; } catch {}
   if (!draft || !Array.isArray(draft.steps) || !draft.steps.length) draft = null;
 
   const active = () => ['running', 'waiting', 'cancelling'].includes(status.state);
@@ -368,8 +372,8 @@
       status = msg.customStatus || status; activity = status.activity || [];
       lastState = status.state;
       if (!draft) {
-        const t = templates.find(x => x.name === 'Plan, build, review') || templates[0] || { name: 'Plan, build, review', steps: [{ role: 'Plan', kind: 'codex' }, { role: 'Build', kind: 'claude' }, { role: 'Review', kind: 'codex' }] };
-        draft = { name: t.name, prompt: '', steps: t.steps.map(s => ({ ...s, model: s.model || '', instructions: s.instructions || '' })) };
+        const t = templates.find(x => x.name === 'Plan, build, review') || templates[0] || { name: 'Plan, build, review', steps: [{ role: 'Plan', kind: 'claude', model: 'claude-fable-5-1' }, { role: 'Build', kind: 'claude', model: 'claude-opus-5-5', effort: 'high' }, { role: 'Review', kind: 'codex', model: 'gpt-6.1-sol' }] };
+        draft = { name: t.name, prompt: oldPrompt, steps: t.steps.map(s => ({ ...s, model: s.model || '', instructions: s.instructions || '' })) };
       }
       $('plPrompt').value = draft.prompt || '';
       renderBuilder(); renderRun();

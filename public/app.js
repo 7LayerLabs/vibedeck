@@ -13,9 +13,11 @@ function ranLabel(kind, id) {
   const labels = modelsCfg[kind]?.labels || {};
   return labels[id] || (kind === 'grok' && id.endsWith('-build') && labels[id.slice(0, -6)]) || id;
 }
-// ran = the model the CLI's own log says answered last; a default pane shows it once known
+// ran = the model the CLI's own log says answered last; a default pane shows it once known,
+// and the CLI's configured default until then
 function chipText(p) {
-  const model = p.model ? modelLabel(p.kind, p.model) : p.ran ? `Default (${ranLabel(p.kind, p.ran)})` : 'Default model';
+  const def = modelsCfg[p.kind]?.defaultLabel;
+  const model = p.model ? modelLabel(p.kind, p.model) : p.ran ? `Default (${ranLabel(p.kind, p.ran)})` : def ? `Default (${def})` : 'Default model';
   return p.effort ? `${model} · ${modelLabel(p.kind, p.effort)}` : model;
 }
 function chipTitle(p) {
