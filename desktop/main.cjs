@@ -9,6 +9,16 @@ app.whenReady().then(()=>{
   if(process.platform==='darwin'){
     try {process.env.PATH=execFileSync(process.env.SHELL||'/bin/zsh',['-ilc','printf "%s" "$PATH"'],{encoding:'utf8',timeout:5000}).trim();} catch {}
   }
+  if(process.platform==='win32'){
+    // Explorer hands the app the PATH from when Windows logged in, so a CLI installed since then
+    // would look missing. Add the saved PATH entries this copy lacks.
+    const saved=key=>{try {return execFileSync('reg',['query',key,'/v','Path'],{encoding:'utf8',windowsHide:true,timeout:5000}).match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/i)?.[1].trim()||'';} catch {return '';}};
+    const have=new Set((process.env.PATH||'').split(';').map(p=>p.toLowerCase()));
+    const extra=[saved('HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),saved('HKCU\\Environment')].join(';').split(';')
+      .map(p=>p.replace(/%([^%]+)%/g,(m,name)=>process.env[name]??m))
+      .filter(p=>p&&!have.has(p.toLowerCase())&&have.add(p.toLowerCase()));
+    if(extra.length)process.env.PATH=[process.env.PATH,...extra].filter(Boolean).join(';');
+  }
   // Only the clipboard is allowed: copy buttons, Ctrl+C, copy on select and right-click paste in the
   // app's own page (the window never shows any other site). Everything else stays denied.
   const allowed=permission=>permission==='clipboard-sanitized-write'||permission==='clipboard-read';
